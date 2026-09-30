@@ -5,146 +5,168 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Core Credits Checker</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #1a1a2e;
             min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             padding: 20px;
+            color: #e0e0e0;
         }
 
         .container {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
-            width: 100%;
-            padding: 40px;
+            max-width: 1100px;
+            margin: 0 auto;
         }
 
         .header {
             text-align: center;
-            margin-bottom: 35px;
+            margin-bottom: 30px;
+            padding: 30px 20px;
         }
 
         .header h1 {
-            color: #333;
-            font-size: 28px;
-            margin-bottom: 8px;
+            color: #fff;
+            font-size: 32px;
+            margin-bottom: 6px;
+            letter-spacing: -0.5px;
         }
 
         .header p {
-            color: #666;
-            font-size: 14px;
+            color: #8888aa;
+            font-size: 15px;
         }
 
-        .form-section {
-            margin-bottom: 30px;
+        /* ── Upload Card ── */
+        .upload-card {
+            background: #16213e;
+            border: 1px solid #2a2a4a;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 24px;
         }
 
-        .form-group {
-            margin-bottom: 20px;
+        .upload-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
         }
 
-        label {
+        @media (max-width: 700px) {
+            .upload-row { grid-template-columns: 1fr; }
+        }
+
+        .form-group label {
             display: block;
             font-weight: 600;
-            color: #333;
+            color: #b0b0cc;
             margin-bottom: 8px;
-            font-size: 14px;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        .file-input-wrapper {
-            position: relative;
-            overflow: hidden;
-            display: inline-block;
-            width: 100%;
-        }
-
-        .file-input-wrapper input[type="file"] {
-            position: absolute;
-            left: -9999px;
-        }
-
-        .file-input-label {
-            display: block;
-            padding: 12px 16px;
-            background: #f5f5f5;
-            border: 2px dashed #999;
+        .drop-zone {
+            padding: 24px 16px;
+            background: #0f3460;
+            border: 2px dashed #3a3a6a;
             border-radius: 8px;
             cursor: pointer;
             text-align: center;
-            color: #666;
+            color: #7878aa;
             font-weight: 500;
-            transition: all 0.3s ease;
+            font-size: 14px;
+            transition: all 0.2s ease;
+            min-height: 80px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
         }
 
-        .file-input-label:hover {
-            background: #efefef;
-            border-color: #667eea;
-            color: #667eea;
+        .drop-zone:hover, .drop-zone.dragover {
+            background: #1a4a7a;
+            border-color: #5a8dee;
+            color: #8ab4f8;
         }
 
-        .file-name {
+        .drop-zone input[type="file"] { display: none; }
+
+        .file-list {
+            margin-top: 8px;
             font-size: 12px;
-            color: #999;
-            margin-top: 4px;
+            color: #6abf6a;
         }
 
-        .file-name.selected {
-            color: #28a745;
+        .file-list span {
+            display: block;
+            padding: 2px 0;
         }
 
-        button {
-            width: 100%;
+        .btn-row {
+            margin-top: 20px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn-primary {
+            flex: 1;
             padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: linear-gradient(135deg, #5a8dee, #7c5ce7);
+            color: #fff;
             border: none;
             border-radius: 8px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
         }
 
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(90, 141, 238, 0.35);
         }
 
-        button:active {
-            transform: translateY(0);
-        }
-
-        button:disabled {
-            opacity: 0.6;
+        .btn-primary:disabled {
+            opacity: 0.5;
             cursor: not-allowed;
             transform: none;
+            box-shadow: none;
         }
 
+        .btn-secondary {
+            padding: 14px 24px;
+            background: #2a2a4a;
+            color: #b0b0cc;
+            border: 1px solid #3a3a6a;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            background: #3a3a5a;
+            color: #fff;
+        }
+
+        /* ── Loading ── */
         .loading {
             display: none;
             text-align: center;
-            padding: 20px;
+            padding: 40px 20px;
         }
 
         .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
+            border: 4px solid #2a2a4a;
+            border-top: 4px solid #5a8dee;
             border-radius: 50%;
-            width: 40px;
-            height: 40px;
+            width: 44px;
+            height: 44px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 10px;
+            margin: 0 auto 16px;
         }
 
         @keyframes spin {
@@ -152,109 +174,191 @@
             100% { transform: rotate(360deg); }
         }
 
-        .results {
-            display: none;
-            margin-top: 30px;
+        .loading p {
+            color: #8888aa;
+            font-size: 14px;
+            line-height: 1.6;
         }
 
-        .results-header {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-
-        .results-stat {
-            display: inline-block;
-            margin-right: 30px;
-            margin-bottom: 10px;
-        }
-
-        .results-stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #667eea;
-        }
-
-        .results-stat-label {
-            font-size: 12px;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .results-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 20px;
-        }
-
-        .results-table thead {
-            background: #f8f9fa;
-        }
-
-        .results-table th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            color: #333;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .results-table td {
-            padding: 12px;
-            border-bottom: 1px solid #eee;
+        .loading .ocr-note {
+            color: #e8a838;
             font-size: 13px;
-            color: #555;
+            margin-top: 8px;
         }
 
-        .results-table tr:hover {
-            background: #f5f5f5;
-        }
-
-        .error {
+        /* ── Error ── */
+        .error-msg {
             display: none;
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-            padding: 12px;
+            background: #3e1c24;
+            border: 1px solid #6b2a36;
+            color: #f0a0a0;
+            padding: 14px 18px;
             border-radius: 8px;
             margin-bottom: 20px;
             font-size: 14px;
         }
 
-        .error.show {
-            display: block;
+        .error-msg.show { display: block; }
+
+        /* ── Stats Boxes ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
         }
 
-        .success-badge {
-            display: inline-block;
-            background: #28a745;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 600;
+        @media (max-width: 600px) {
+            .stats-row { grid-template-columns: 1fr; }
         }
 
-        .reset-button {
-            background: #6c757d;
-            margin-top: 15px;
-        }
-
-        .reset-button:hover {
-            box-shadow: 0 10px 20px rgba(108, 117, 125, 0.4);
-        }
-
-        .no-results {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-            padding: 15px;
-            border-radius: 8px;
+        .stat-box {
+            background: #16213e;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            padding: 20px;
             text-align: center;
+        }
+
+        .stat-box.shipped { border-top: 3px solid #5a8dee; }
+        .stat-box.credited { border-top: 3px solid #6abf6a; }
+        .stat-box.unclaimed { border-top: 3px solid #e8a838; }
+
+        .stat-count {
+            font-size: 36px;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 2px;
+        }
+
+        .stat-box.shipped .stat-count { color: #5a8dee; }
+        .stat-box.credited .stat-count { color: #6abf6a; }
+        .stat-box.unclaimed .stat-count { color: #e8a838; }
+
+        .stat-dollars {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .stat-box.shipped .stat-dollars { color: #8ab4f8; }
+        .stat-box.credited .stat-dollars { color: #8cd88c; }
+        .stat-box.unclaimed .stat-dollars { color: #f0c060; }
+
+        .stat-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #6868aa;
+        }
+
+        /* ── OCR Badge ── */
+        .ocr-badge {
+            display: inline-block;
+            background: #2a2a4a;
+            color: #e8a838;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        /* ── Results Table ── */
+        .results-section {
+            display: none;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .table-header h2 {
+            color: #e8a838;
+            font-size: 20px;
+        }
+
+        .table-wrap {
+            background: #16213e;
+            border: 1px solid #2a2a4a;
+            border-radius: 10px;
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 700px;
+        }
+
+        thead { background: #0f3460; }
+
+        th {
+            padding: 12px 14px;
+            text-align: left;
+            font-weight: 600;
+            color: #8ab4f8;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1e2e50;
+            font-size: 13px;
+            color: #c0c0e0;
+        }
+
+        tr:hover td { background: #1a2e55; }
+
+        td.amount {
+            text-align: right;
+            font-weight: 600;
+            color: #e8a838;
+            white-space: nowrap;
+        }
+
+        td.control { font-weight: 600; color: #8ab4f8; font-family: 'Courier New', monospace; }
+
+        /* ── No unclaimed ── */
+        .all-clear {
+            background: #1a3a2a;
+            border: 1px solid #2a6a3a;
+            color: #6abf6a;
+            padding: 24px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 16px;
+        }
+
+        /* ── CSV button ── */
+        .btn-csv {
+            padding: 8px 16px;
+            background: #2a2a4a;
+            color: #8ab4f8;
+            border: 1px solid #3a3a6a;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-csv:hover {
+            background: #3a3a5a;
+            color: #fff;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: #4a4a6a;
+            font-size: 12px;
         }
     </style>
 </head>
@@ -262,134 +366,132 @@
     <div class="container">
         <div class="header">
             <h1>Core Credits Checker</h1>
-            <p>Identify unclaimed core returns and recover lost revenue</p>
+            <p>Compare GCRS shipper documents against Mopar credit memos to find unclaimed core returns</p>
         </div>
 
-        <div class="error" id="errorMessage"></div>
+        <div class="error-msg" id="errorMessage"></div>
 
-        <div class="form-section">
-            <div class="form-group">
-                <label for="shipperPdf">Step 1: GCRS Shipper Report (PDF)</label>
-                <div class="file-input-wrapper">
-                    <input type="file" id="shipperPdf" accept=".pdf" required>
-                    <label for="shipperPdf" class="file-input-label">
-                        Click to select shipper PDF or drag and drop
-                    </label>
+        <div class="upload-card" id="uploadCard">
+            <div class="upload-row">
+                <div class="form-group">
+                    <label>GCRS Shipper PDFs (scanned)</label>
+                    <div class="drop-zone" id="shipperZone">
+                        <div>Drop shipper PDF(s) here or click to select</div>
+                        <div style="font-size:11px;margin-top:4px;color:#5a5a8a;">Accepts multiple files</div>
+                        <input type="file" id="shipperPdf" accept=".pdf" multiple>
+                    </div>
+                    <div class="file-list" id="shipperFiles"></div>
                 </div>
-                <div class="file-name" id="shipperFileName"></div>
+
+                <div class="form-group">
+                    <label>Mopar Credit Memo PDFs</label>
+                    <div class="drop-zone" id="creditZone">
+                        <div>Drop credit memo PDF(s) here or click to select</div>
+                        <div style="font-size:11px;margin-top:4px;color:#5a5a8a;">Accepts multiple files</div>
+                        <input type="file" id="creditPdf" accept=".pdf" multiple>
+                    </div>
+                    <div class="file-list" id="creditFiles"></div>
+                </div>
             </div>
 
-            <div class="form-group">
-                <label for="creditPdf">Step 2: Core Return Credit Memo (PDF)</label>
-                <div class="file-input-wrapper">
-                    <input type="file" id="creditPdf" accept=".pdf" required>
-                    <label for="creditPdf" class="file-input-label">
-                        Click to select credit memo PDF or drag and drop
-                    </label>
-                </div>
-                <div class="file-name" id="creditFileName"></div>
+            <div class="btn-row">
+                <button class="btn-primary" id="submitBtn" onclick="checkCores()">
+                    Analyze Core Returns
+                </button>
             </div>
         </div>
-
-        <button id="submitBtn" onclick="checkCores()">Analyze PDFs</button>
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <p>Processing your files...</p>
+            <p>Analyzing your PDFs&hellip;</p>
+            <p class="ocr-note">Scanned shippers require OCR &mdash; this can take 30&ndash;90 seconds per PDF on the free server.</p>
         </div>
 
-        <div class="results" id="results">
-            <div class="results-header">
-                <div class="results-stat">
-                    <div class="results-stat-value" id="uncountClaimedCount">0</div>
-                    <div class="results-stat-label">Unclaimed Cores</div>
+        <div class="results-section" id="results">
+            <div id="ocrBadge"></div>
+
+            <div class="stats-row">
+                <div class="stat-box shipped">
+                    <div class="stat-count" id="statShipped">0</div>
+                    <div class="stat-dollars" id="statShippedAmt">$0.00</div>
+                    <div class="stat-label">Shipped</div>
                 </div>
-                <div class="results-stat">
-                    <div class="results-stat-value" id="totalAmount">$0.00</div>
-                    <div class="results-stat-label">Total Value</div>
+                <div class="stat-box credited">
+                    <div class="stat-count" id="statCredited">0</div>
+                    <div class="stat-dollars" id="statCreditedAmt">$0.00</div>
+                    <div class="stat-label">Credited</div>
+                </div>
+                <div class="stat-box unclaimed">
+                    <div class="stat-count" id="statUnclaimed">0</div>
+                    <div class="stat-dollars" id="statUnclaimedAmt">$0.00</div>
+                    <div class="stat-label">Unclaimed</div>
                 </div>
             </div>
 
+            <div class="table-header">
+                <h2>Unclaimed Core Returns</h2>
+                <button class="btn-csv" id="csvBtn" onclick="exportCSV()" style="display:none;">Export CSV</button>
+            </div>
+
             <div id="resultsList"></div>
-            <button class="reset-button" onclick="resetForm()">Check Another File</button>
+
+            <div class="btn-row" style="margin-top:20px;">
+                <button class="btn-secondary" onclick="resetForm()">Check Another Set</button>
+            </div>
+        </div>
+
+        <div class="footer">
+            Core Credits Checker &mdash; Built for CDJR parts operations
         </div>
     </div>
 
     <script>
-        document.getElementById('shipperPdf').addEventListener('change', function(e) {
-            updateFileName('shipperFileName', this.files[0]);
-        });
+        let lastResults = null;
 
-        document.getElementById('creditPdf').addEventListener('change', function(e) {
-            updateFileName('creditFileName', this.files[0]);
-        });
+        // ── Drop zone wiring ──
+        function wireZone(zoneId, inputId, listId) {
+            const zone = document.getElementById(zoneId);
+            const input = document.getElementById(inputId);
+            const list = document.getElementById(listId);
 
-        function updateFileName(elementId, file) {
-            const elem = document.getElementById(elementId);
-            if (file) {
-                elem.textContent = String.fromCharCode(10003) + ' ' + file.name;
-                elem.classList.add('selected');
-            } else {
-                elem.textContent = '';
-                elem.classList.remove('selected');
-            }
+            zone.addEventListener('click', () => input.click());
+            input.addEventListener('change', () => showFiles(input, list));
+
+            ['dragenter','dragover'].forEach(e =>
+                zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('dragover'); }));
+            ['dragleave','drop'].forEach(e =>
+                zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('dragover'); }));
+
+            zone.addEventListener('drop', ev => {
+                ev.preventDefault();
+                input.files = ev.dataTransfer.files;
+                showFiles(input, list);
+            });
         }
 
-        ['shipperPdf', 'creditPdf'].forEach(id => {
-            const input = document.getElementById(id);
-            const label = input.nextElementSibling;
+        function showFiles(input, list) {
+            if (!input.files.length) { list.innerHTML = ''; return; }
+            list.innerHTML = Array.from(input.files)
+                .map(f => '<span>✓ ' + escapeHtml(f.name) + '</span>').join('');
+        }
 
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                label.addEventListener(eventName, preventDefaults, false);
-            });
+        wireZone('shipperZone', 'shipperPdf', 'shipperFiles');
+        wireZone('creditZone', 'creditPdf', 'creditFiles');
 
-            function preventDefaults(e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
-
-            ['dragenter', 'dragover'].forEach(eventName => {
-                label.addEventListener(eventName, () => {
-                    label.style.borderColor = '#667eea';
-                    label.style.background = '#f0f4ff';
-                });
-            });
-
-            ['dragleave', 'drop'].forEach(eventName => {
-                label.addEventListener(eventName, () => {
-                    label.style.borderColor = '#999';
-                    label.style.background = '#f5f5f5';
-                });
-            });
-
-            label.addEventListener('drop', (e) => {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                input.files = files;
-                updateFileName(id === 'shipperPdf' ? 'shipperFileName' : 'creditFileName', files[0]);
-            });
-        });
-
+        // ── Submit ──
         async function checkCores() {
-            const shipperPdf = document.getElementById('shipperPdf').files[0];
-            const creditPdf = document.getElementById('creditPdf').files[0];
-            const errorDiv = document.getElementById('errorMessage');
-            const loading = document.getElementById('loading');
-            const results = document.getElementById('results');
+            const shipperInput = document.getElementById('shipperPdf');
+            const creditInput  = document.getElementById('creditPdf');
+            const errDiv   = document.getElementById('errorMessage');
+            const loading  = document.getElementById('loading');
+            const results  = document.getElementById('results');
 
-            errorDiv.classList.remove('show');
-            errorDiv.textContent = '';
+            errDiv.classList.remove('show');
             results.style.display = 'none';
 
-            if (!shipperPdf || !creditPdf) {
-                errorDiv.textContent = 'Please select both PDF files before proceeding.';
-                errorDiv.classList.add('show');
-                return;
-            }
-
-            if (!shipperPdf.type.includes('pdf') || !creditPdf.type.includes('pdf')) {
-                errorDiv.textContent = 'Please select valid PDF files.';
-                errorDiv.classList.add('show');
+            if (!shipperInput.files.length || !creditInput.files.length) {
+                errDiv.textContent = 'Select at least one shipper PDF and one credit memo PDF.';
+                errDiv.classList.add('show');
                 return;
             }
 
@@ -397,78 +499,119 @@
             document.getElementById('submitBtn').disabled = true;
 
             try {
-                const formData = new FormData();
-                formData.append('shipper_pdf', shipperPdf);
-                formData.append('credit_pdf', creditPdf);
+                const fd = new FormData();
+                for (const f of shipperInput.files) fd.append('shipper_pdf', f);
+                for (const f of creditInput.files)  fd.append('credit_pdf', f);
 
-                const response = await fetch('/api/check-cores', {
+                const resp = await fetch('/api/check-cores', {
                     method: 'POST',
-                    body: formData
+                    body: fd,
                 });
 
-                const data = await response.json();
+                let data;
+                try {
+                    data = await resp.json();
+                } catch (e) {
+                    throw new Error('Server returned invalid JSON. The server may have run out of memory processing large scanned PDFs.');
+                }
 
+                if (!resp.ok) throw new Error(data.error || 'Server error (' + resp.status + ')');
                 if (data.success) {
+                    lastResults = data;
                     displayResults(data);
                 } else {
-                    throw new Error(data.error || 'An error occurred processing the files.');
+                    throw new Error(data.error || 'Processing failed.');
                 }
-            } catch (error) {
-                errorDiv.textContent = error.message;
-                errorDiv.classList.add('show');
+            } catch (err) {
+                errDiv.textContent = err.message;
+                errDiv.classList.add('show');
             } finally {
                 loading.style.display = 'none';
                 document.getElementById('submitBtn').disabled = false;
             }
         }
 
-        function displayResults(data) {
+        // ── Display ──
+        function fmtDollars(n) {
+            return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function displayResults(d) {
             const results = document.getElementById('results');
-            const resultsList = document.getElementById('resultsList');
 
-            document.getElementById('uncountClaimedCount').textContent = data.unclaimed_count;
-            document.getElementById('totalAmount').textContent = '$' + data.total_amount.toFixed(2);
+            // OCR badge
+            document.getElementById('ocrBadge').innerHTML =
+                d.ocr_used ? '<span class="ocr-badge">OCR was used on scanned shipper PDFs</span>' : '';
 
-            if (data.results.length === 0) {
-                resultsList.innerHTML = '<div class="no-results">No unclaimed cores found. All shipments have been credited.</div>';
+            // Stats
+            document.getElementById('statShipped').textContent     = d.shipper_count;
+            document.getElementById('statShippedAmt').textContent   = fmtDollars(d.shipper_total);
+            document.getElementById('statCredited').textContent     = d.credited_count;
+            document.getElementById('statCreditedAmt').textContent  = fmtDollars(d.credited_total);
+            document.getElementById('statUnclaimed').textContent    = d.unclaimed_count;
+            document.getElementById('statUnclaimedAmt').textContent = fmtDollars(d.unclaimed_total);
+
+            // Table
+            const box = document.getElementById('resultsList');
+            if (!d.results.length) {
+                box.innerHTML = '<div class="all-clear">✓ All shipped cores have been credited. No unclaimed returns.</div>';
+                document.getElementById('csvBtn').style.display = 'none';
             } else {
-                let tableHTML = '<table class="results-table"><thead><tr><th>Control #</th><th>Part #</th><th>Qty</th><th>Amount</th></tr></thead><tbody>';
-                data.results.forEach(item => {
-                    tableHTML += '<tr>' +
-                        '<td><strong>' + escapeHtml(item.control) + '</strong></td>' +
-                        '<td>' + escapeHtml(item.part) + '</td>' +
-                        '<td>' + escapeHtml(item.qty) + '</td>' +
-                        '<td>' + escapeHtml(item.amount) + '</td>' +
-                    '</tr>';
+                let html = '<div class="table-wrap"><table>' +
+                    '<thead><tr><th>Control #</th><th>Claim #</th><th>Part #</th>' +
+                    '<th>Description</th><th>Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>';
+                d.results.forEach(r => {
+                    const amt = parseFloat((r.amount || '0').replace(/,/g, ''));
+                    html += '<tr>' +
+                        '<td class="control">' + esc(r.control) + '</td>' +
+                        '<td>' + esc(r.claim) + '</td>' +
+                        '<td>' + esc(r.part) + '</td>' +
+                        '<td>' + esc(r.description) + '</td>' +
+                        '<td>' + esc(r.qty) + '</td>' +
+                        '<td class="amount">' + fmtDollars(amt) + '</td></tr>';
                 });
-                tableHTML += '</tbody></table>';
-                resultsList.innerHTML = tableHTML;
+                html += '</tbody></table></div>';
+                box.innerHTML = html;
+                document.getElementById('csvBtn').style.display = 'inline-block';
             }
 
             results.style.display = 'block';
-            results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            results.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
+        // ── CSV export ──
+        function exportCSV() {
+            if (!lastResults || !lastResults.results.length) return;
+            const rows = [['Control','Claim','Part','Description','Qty','Amount']];
+            lastResults.results.forEach(r => {
+                rows.push([r.control, r.claim, r.part, r.description, r.qty, r.amount]);
+            });
+            const csv = rows.map(r => r.map(c => '"' + String(c||'').replace(/"/g,'""') + '"').join(',')).join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'unclaimed_cores_' + new Date().toISOString().slice(0,10) + '.csv';
+            a.click();
+        }
+
+        // ── Reset ──
         function resetForm() {
             document.getElementById('shipperPdf').value = '';
             document.getElementById('creditPdf').value = '';
-            document.getElementById('shipperFileName').textContent = '';
-            document.getElementById('creditFileName').textContent = '';
-            document.getElementById('shipperFileName').classList.remove('selected');
-            document.getElementById('creditFileName').classList.remove('selected');
+            document.getElementById('shipperFiles').innerHTML = '';
+            document.getElementById('creditFiles').innerHTML = '';
             document.getElementById('results').style.display = 'none';
             document.getElementById('errorMessage').classList.remove('show');
+            lastResults = null;
         }
 
+        // ── Helpers ──
+        function esc(t) { return escapeHtml(t); }
+
         function escapeHtml(text) {
-            const map = {
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#039;'
-            };
-            return String(text).replace(/[&<>"']/g, m => map[m]);
+            const d = document.createElement('div');
+            d.textContent = String(text || '');
+            return d.innerHTML;
         }
     </script>
 </body>

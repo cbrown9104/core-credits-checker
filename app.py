@@ -1,136 +1,376 @@
+"""
+Core Credits Checker – Flask web app
+=====================================
+Compares GCRS Dealer Shipper PDFs (scanned) against Mopar Weekly Global
+Core Return Credit Memo PDFs (text-based) to find unclaimed core returns.
+
+Credit-memo parser uses pdftotext -layout (proven canonical parser from
+Casey's Core Reconciliation project).  Shipper parser uses Tesseract OCR
+at 300 DPI with --psm 6.
+"""
+
 from flask import Flask, render_template, request, jsonify
-import pdfplumber
-import re
-from datetime import datetime
 from werkzeug.utils import secure_filename
+import pdfplumber
+import subprocess
+import re
+import tempfile
 import os
+import gc
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
 
-# Create uploads folder if it doesn't exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-def extract_pdf_text(pdf_file):
-    """Extract text from PDF file"""
+# ── regex ────────────────────────────────────────────────────────────────
+# Control ticket on a shipper line: C/©  + alphanumeric + 7-8 digits
+CTRL_RE   = re.compile(r'^([Cc©€][A-Za-z0-9]\d{7,8})\b')
+# Dollar amount at end of line (handles commas: 2,500.00)
+AMT_RE    = re.compile(r'([\d,]+\.\d{2})\s*$')
+# Wrapped continuation: just qty + amount on next line
+WRAP_RE   = re.compile(r'^\s*(\d+)\s+([\d,]+\.\d{2})\s*$')
+# Claim number (5-6 digits, standalone token)
+CLAIM_RE  = re.compile(r'^\d{5,6}$')
+
+# Credit-memo header:  CREDIT MEMO NUMBER: 03181000CCxxxxxxxx
+CM_HDR_RE = re.compile(r'CREDIT MEMO NUMBER:\s*03181000(CC\d+)')
+# Credit-memo control ticket
+CM_REF_RE = re.compile(r'REFERENCE/CONTROL\s+NUMBER\s+(\S+.*)')
+
+# Boilerplate keywords to skip in shipper OCR output
+SKIP = frozenset([
+    'checkoff', 'ticket number', 'part number', 'description',
+    'quantity usd', 'fca/mopar', 'fca/', 'eca/mopar', 'gcrs dealer',
+    'dealer:', 'covert chrysler', 'research blvd', 'austin, tx',
+    'ship to:', 'core center', 'east shelby', 'memphis, tn',
+    'check mark', 'picked up', 'crossed through', 'reflecting only',
+    'pickup verif', 'driver', 'signature', 'date total', 'dds /',
+    'gcrs shp#', 'part checkoff', 'omnisource', 'detroit ave',
+    'toledo, oh', 'total parts',
+])
+
+
+# ── PDF text extraction ─────────────────────────────────────────────────
+def _is_scanned(path):
+    """True when the PDF has no selectable text (image-only scan)."""
     try:
-        text = ""
-        with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                text += page.extract_text() + "\n"
-        return text
-    except Exception as e:
-        return None
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages[:3]:
+                if len((page.extract_text() or '').strip()) > 100:
+                    return False
+        return True
+    except Exception:
+        return True
 
-def parse_shipper_data(text):
+
+def _ocr_text(path):
+    """OCR a scanned PDF one page at a time (300 DPI, --psm 6)."""
+    from pdf2image import convert_from_path
+    import pytesseract
+
+    with pdfplumber.open(path) as pdf:
+        n = len(pdf.pages)
+
+    parts = []
+    for pg in range(1, n + 1):
+        try:
+            imgs = convert_from_path(
+                path, first_page=pg, last_page=pg,
+                dpi=300, fmt='jpeg',
+            )
+            if imgs:
+                parts.append(
+                    pytesseract.image_to_string(imgs[0], config='--psm 6'))
+                del imgs
+                gc.collect()
+        except Exception:
+            continue
+    return '\n'.join(parts)
+
+
+def _pdftotext(path):
+    """Extract text via pdftotext -layout (poppler-utils)."""
+    r = subprocess.run(
+        ['pdftotext', '-layout', path, '-'],
+        capture_output=True, text=True, timeout=120,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout
+    return None
+
+
+def _pdfplumber_text(path):
+    """Fallback: extract with pdfplumber."""
+    parts = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            parts.append(page.extract_text() or '')
+    return '\n'.join(parts)
+
+
+# ── shipper parser ──────────────────────────────────────────────────────
+def _norm(raw):
+    """Normalize a control ticket from OCR."""
+    return raw.upper().replace('©', 'C').replace('€', 'C')
+
+
+def _fix_qty(s):
+    s = s.replace('i', '1').replace('l', '1').replace('L', '1')
+    s = s.replace('O', '0').replace('o', '0')
+    try:
+        int(s)
+        return s
+    except ValueError:
+        return '1'
+
+
+def parse_shipper(text):
     """
-    Parse GCRS shipper PDF to extract control numbers, dates, part numbers, qty, amount
-    Expected format: control number, part number, quantity, dollar amount per line
+    Parse GCRS shipper OCR text into line items.
+
+    Each data row: CONTROL [CLAIM] PART DESC QTY AMOUNT
     """
-    lines = []
-    for line in text.split('\n'):
-        line = line.strip()
+    results = []
+    lines = text.split('\n')
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
         if not line:
             continue
-        parts = re.split(r'\s+', line)
-        if len(parts) >= 4:
-            try:
-                control_num = parts[0]
-                part_num = parts[1] if len(parts) > 1 else ""
-                qty = parts[2] if len(parts) > 2 else "0"
-                amount = parts[3] if len(parts) > 3 else "0"
-                if any(char.isdigit() for char in control_num):
-                    lines.append({
-                        'control': control_num,
-                        'part': part_num,
-                        'qty': qty,
-                        'amount': amount,
-                        'raw': line
-                    })
-            except:
+
+        low = line.lower()
+        if any(kw in low for kw in SKIP):
+            continue
+        if low.startswith('total'):
+            continue
+
+        ct = CTRL_RE.match(line)
+        if not ct:
+            continue
+
+        control = _norm(ct.group(1))
+        rest = line[ct.end():].strip()
+
+        amt = AMT_RE.search(rest)
+        if amt:
+            amount = amt.group(1)
+            before = rest[:amt.start()].strip()
+            tokens = before.split()
+
+            if not tokens:
+                results.append(_row(control, '', '', '', '1', amount))
                 continue
-    return lines
 
-def parse_credit_data(text):
+            qty = _fix_qty(tokens.pop())
+            claim = ''
+            if tokens and CLAIM_RE.match(tokens[0]):
+                claim = tokens.pop(0)
+            part = tokens.pop(0) if tokens else ''
+            desc = ' '.join(tokens)
+            results.append(_row(control, claim, part, desc, qty, amount))
+
+        else:
+            # No amount — check next line for wrapped qty + amount
+            qty, amount = '1', '0.00'
+            if i < len(lines):
+                wm = WRAP_RE.match(lines[i].strip())
+                if wm:
+                    qty, amount = wm.group(1), wm.group(2)
+                    i += 1
+
+            tokens = rest.split()
+            claim = ''
+            if tokens and CLAIM_RE.match(tokens[0]):
+                claim = tokens.pop(0)
+            part = tokens.pop(0) if tokens else ''
+            desc = ' '.join(tokens)
+            results.append(_row(control, claim, part, desc, qty, amount))
+
+    return results
+
+
+def _row(ctrl, claim, part, desc, qty, amt):
+    return dict(control=ctrl, claim=claim, part=part,
+                description=desc, qty=qty, amount=amt)
+
+
+# ── credit-memo parser (canonical: pdftotext -layout) ───────────────────
+def parse_credits(text):
     """
-    Parse core return credit PDF to extract control numbers
+    Extract {control_ticket: credit_memo_number} from a Mopar Weekly
+    Global Core Return Credit Memo.
+
+    Uses Casey's canonical parser: split on CREDIT MEMO NUMBER headers,
+    then find REFERENCE/CONTROL NUMBER lines within each block.
+    First occurrence of a ticket wins.
     """
-    controls = set()
+    credits = {}   # ticket -> memo number
+
+    blocks = CM_HDR_RE.split(text)
+    # blocks[0] = preamble, then alternating (memo_num, body)
+    idx = 1
+    while idx < len(blocks):
+        memo = blocks[idx]
+        body = blocks[idx + 1] if idx + 1 < len(blocks) else ''
+        idx += 2
+
+        for m in re.finditer(
+                r'REFERENCE/CONTROL\s+NUMBER\s+(\S+)', body):
+            ticket = m.group(1).strip().upper()
+            if ticket not in credits:
+                credits[ticket] = memo
+
+    return credits
+
+
+def parse_credits_fallback(text):
+    """
+    Simpler fallback: just collect every control-ticket-shaped string
+    after REFERENCE/CONTROL NUMBER or RM: patterns.
+    """
+    tickets = set()
     for line in text.split('\n'):
-        line = line.strip()
-        if not line:
+        m = re.search(
+            r'REFERENCE/CONTROL\s+NUMBER\s+(C[A-Z0-9]\d{7,8})', line, re.I)
+        if m:
+            tickets.add(m.group(1).upper())
             continue
-        parts = re.split(r'\s+', line)
-        if len(parts) >= 1:
-            control_num = parts[0]
-            if any(char.isdigit() for char in control_num):
-                controls.add(control_num)
-    return controls
+        m = re.search(r'RM:(C[A-Z0-9]\d{7,8})', line, re.I)
+        if m:
+            tickets.add(m.group(1).upper())
+    return tickets
 
-def match_and_find_unclaimed(shipper_data, credited_controls):
-    """
-    Compare shipper data with credited controls
-    Return lines where control number is NOT in credited controls
-    """
-    unclaimed = []
-    for item in shipper_data:
-        if item['control'] not in credited_controls:
-            unclaimed.append(item)
-    return unclaimed
 
+# ── routes ──────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/api/check-cores', methods=['POST'])
 def check_cores():
-    """
-    API endpoint to process uploaded PDFs and find unclaimed cores
-    """
     try:
-        if 'shipper_pdf' not in request.files or 'credit_pdf' not in request.files:
-            return jsonify({'error': 'Both PDF files are required'}), 400
-        shipper_file = request.files['shipper_pdf']
-        credit_file = request.files['credit_pdf']
-        if shipper_file.filename == '' or credit_file.filename == '':
-            return jsonify({'error': 'Both files must be selected'}), 400
-        shipper_filename = secure_filename(shipper_file.filename)
-        shipper_path = os.path.join(app.config['UPLOAD_FOLDER'], shipper_filename)
-        shipper_file.save(shipper_path)
-        shipper_text = extract_pdf_text(shipper_path)
-        if not shipper_text:
-            return jsonify({'error': 'Could not read shipper PDF'}), 400
-        credit_filename = secure_filename(credit_file.filename)
-        credit_path = os.path.join(app.config['UPLOAD_FOLDER'], credit_filename)
-        credit_file.save(credit_path)
-        credit_text = extract_pdf_text(credit_path)
-        if not credit_text:
-            return jsonify({'error': 'Could not read credit memo PDF'}), 400
-        shipper_data = parse_shipper_data(shipper_text)
-        credited_controls = parse_credit_data(credit_text)
-        unclaimed = match_and_find_unclaimed(shipper_data, credited_controls)
-        total_amount = 0
-        for item in unclaimed:
-            try:
-                amount = float(item['amount'].replace('$', '').replace(',', ''))
-                total_amount += amount
-            except:
-                pass
-        unclaimed_sorted = sorted(unclaimed, key=lambda x: x['control'])
-        try:
-            os.remove(shipper_path)
-            os.remove(credit_path)
-        except:
-            pass
+        shipper_files = [f for f in request.files.getlist('shipper_pdf')
+                         if f.filename]
+        credit_files  = [f for f in request.files.getlist('credit_pdf')
+                         if f.filename]
+
+        if not shipper_files:
+            return jsonify(
+                {'error': 'Upload at least one GCRS shipper PDF.'}), 400
+        if not credit_files:
+            return jsonify(
+                {'error': 'Upload at least one credit memo PDF.'}), 400
+
+        with tempfile.TemporaryDirectory() as tmp:
+
+            # ── shipper(s) ──
+            all_items = []
+            ocr_used = False
+
+            for sf in shipper_files:
+                p = os.path.join(tmp, _safe(sf.filename))
+                sf.save(p)
+
+                if _is_scanned(p):
+                    ocr_used = True
+                    text = _ocr_text(p)
+                else:
+                    text = _pdftotext(p) or _pdfplumber_text(p)
+
+                if text:
+                    all_items.extend(parse_shipper(text))
+
+                _rm(p)
+                gc.collect()
+
+            if not all_items:
+                return jsonify({
+                    'error': 'No core-return line items found in the shipper '
+                             'PDF(s). Verify these are GCRS Dealer Shipper '
+                             'Documents.'
+                }), 400
+
+            # ── credit memo(s) ──
+            all_credited = set()       # ticket strings
+            credit_details = {}        # ticket -> memo number
+
+            for cf in credit_files:
+                p = os.path.join(tmp, _safe(cf.filename))
+                cf.save(p)
+
+                # Prefer pdftotext -layout (canonical)
+                text = _pdftotext(p)
+                if text and 'CREDIT MEMO NUMBER' in text:
+                    creds = parse_credits(text)
+                    for t, memo in creds.items():
+                        all_credited.add(t)
+                        credit_details.setdefault(t, memo)
+                elif text:
+                    # Text-based but not matching header format — fallback
+                    all_credited.update(parse_credits_fallback(text))
+                else:
+                    # Scanned credit memo (rare) — OCR it
+                    ocr_text = _ocr_text(p)
+                    if ocr_text:
+                        all_credited.update(parse_credits_fallback(ocr_text))
+
+                _rm(p)
+                gc.collect()
+
+        # ── match ──
+        unclaimed, claimed = [], []
+        for item in all_items:
+            if item['control'] in all_credited:
+                item['memo'] = credit_details.get(item['control'], '')
+                claimed.append(item)
+            else:
+                unclaimed.append(item)
+
+        # ── totals ──
+        def _sum(lst):
+            return round(sum(
+                float(it.get('amount', '0').replace(',', '') or '0')
+                for it in lst), 2)
+
+        unclaimed.sort(
+            key=lambda x: float(
+                x.get('amount', '0').replace(',', '') or '0'),
+            reverse=True)
+
         return jsonify({
-            'success': True,
+            'success':         True,
+            'ocr_used':        ocr_used,
+            'shipper_count':   len(all_items),
+            'credited_count':  len(claimed),
             'unclaimed_count': len(unclaimed),
-            'total_amount': round(total_amount, 2),
-            'results': unclaimed_sorted[:50]
+            'shipper_total':   _sum(all_items),
+            'credited_total':  _sum(claimed),
+            'unclaimed_total': _sum(unclaimed),
+            'credit_tickets':  len(all_credited),
+            'results':         unclaimed,
         })
+
     except Exception as e:
-        return jsonify({'error': f'Error processing files: {str(e)}'}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Processing error: {str(e)}'}), 500
+
+
+# ── helpers ─────────────────────────────────────────────────────────────
+def _safe(fn):
+    name = secure_filename(fn)
+    return name if name else 'upload.pdf'
+
+
+def _rm(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
 
 if __name__ == '__main__':
     app.run(debug=True)
