@@ -26,7 +26,7 @@ MAX_OCR_PAGES = 20
 OCR_DPI = 150  # was 200; lower RAM/time with small accuracy tradeoff
 
 # ── regex ────────────────────────────────────────────────────────────────
-CTRL_RE = re.compile(r'^([Cc©€][A-Za-z0-9]\d{7,8})\b')
+CTRL_RE = re.compile(r'^([Cc©€6][A-Za-z0-9]\d{7,8})\b')
 AMT_RE = re.compile(r'([\d,]+\.\d{2})\s*$')
 WRAP_RE = re.compile(r'^\s*(\d+)\s+([\d,]+\.\d{2})\s*$')
 CLAIM_RE = re.compile(r'^\d{5,6}$')
@@ -129,7 +129,11 @@ def _pdfplumber_text(path):
 
 
 def _norm(raw):
-    return raw.upper().replace('©', 'C').replace('€', 'C')
+    s = raw.upper().replace('©', 'C').replace('€', 'C')
+    # OCR often misreads leading C as 6 on shipper scans (e.g. 6455183028)
+    if s.startswith('6') and len(s) >= 9:
+        s = 'C' + s[1:]
+    return s
 
 
 def _norm_ticket(raw):
