@@ -376,9 +376,9 @@
                 <div class="form-group">
                     <label>GCRS Shipper PDFs (scanned)</label>
                     <div class="drop-zone" id="shipperZone">
-                        <div>Drop shipper PDF(s) here or click to select</div>
-                        <div style="font-size:11px;margin-top:4px;color:#5a5a8a;">Accepts multiple files</div>
-                        <input type="file" id="shipperPdf" accept=".pdf" multiple>
+                        <div>Drop shipper PDF here or click to select</div>
+                        <div style="font-size:11px;margin-top:4px;color:#5a5a8a;">Free server: 1 shipper PDF per run</div>
+                        <input type="file" id="shipperPdf" accept=".pdf">
                     </div>
                     <div class="file-list" id="shipperFiles"></div>
                 </div>
@@ -508,11 +508,18 @@
                     body: fd,
                 });
 
+                const raw = await resp.text();
                 let data;
                 try {
-                    data = await resp.json();
+                    data = JSON.parse(raw);
                 } catch (e) {
-                    throw new Error('Server returned invalid JSON. The server may have run out of memory processing large scanned PDFs.');
+                    const snippet = (raw || '').trim().slice(0, 120);
+                    const looksHtml = /<!DOCTYPE|<html/i.test(snippet) || resp.status === 502 || resp.status === 503;
+                    throw new Error(
+                        'Server returned a non-JSON response (often an out-of-memory crash on the free tier). ' +
+                        'Try one smaller shipper PDF at a time. ' +
+                        (snippet ? 'Response starts with: ' + snippet : 'HTTP ' + resp.status)
+                    );
                 }
 
                 if (!resp.ok) throw new Error(data.error || 'Server error (' + resp.status + ')');
