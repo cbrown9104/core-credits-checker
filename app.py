@@ -21,6 +21,10 @@ import gc
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
 
+# Cap OCR pages so a huge scan can't run until OOM/timeout (Starter-safe default)
+MAX_OCR_PAGES = 20
+OCR_DPI = 150  # was 200; lower RAM/time with small accuracy tradeoff
+
 # ── regex ────────────────────────────────────────────────────────────────
 CTRL_RE = re.compile(r'^([Cc©€][A-Za-z0-9]\d{7,8})\b')
 AMT_RE = re.compile(r'([\d,]+\.\d{2})\s*$')
@@ -71,6 +75,11 @@ def _page_count(path):
 def _ocr_text(path):
     """OCR a scanned PDF one page at a time via CLI on disk."""
     n = _page_count(path)
+    if n > MAX_OCR_PAGES:
+        raise ValueError(
+            f'Shipper has {n} pages; OCR is capped at {MAX_OCR_PAGES} '
+            f'pages per run. Split the PDF or raise MAX_OCR_PAGES.'
+        )
     parts = []
     for pg in range(1, n + 1):
         prefix = os.path.join(
@@ -80,7 +89,7 @@ def _ocr_text(path):
         try:
             subprocess.run(
                 ['pdftoppm', '-f', str(pg), '-l', str(pg),
-                 '-gray', '-r', '200', '-singlefile', path, prefix],
+                 '-gray', '-r', str(OCR_DPI), '-singlefile', path, prefix],
                 capture_output=True, timeout=60,
             )
             if not os.path.exists(pgm):
@@ -123,6 +132,11 @@ def _norm(raw):
     return raw.upper().replace('©', 'C').replace('€', 'C')
 
 
+def _norm_ticket(raw):
+    """Same ticket cleanup for shipper controls and credit REFERENCE/CONTROL numbers."""
+    return _norm((raw or '').strip())
+
+
 def _fix_qty(s):
     s = s.replace('i', '1').replace('l', '1').replace('L', '1')
     s = s.replace('O', '0').replace('o', '0')
@@ -150,7 +164,7 @@ def parse_shipper(text):
         ct = CTRL_RE.match(line)
         if not ct:
             continue
-        control = _norm(ct.group(1))
+        control = _norm_ticket(ct.group(1))
         rest = line[ct.end():].strip()
         amt = AMT_RE.search(rest)
         if amt:
@@ -199,7 +213,7 @@ def parse_credits(text):
         idx += 2
         for m in re.finditer(
                 r'REFERENCE/CONTROL\s+NUMBER\s+(\S+)', body):
-            ticket = m.group(1).strip().upper()
+            ticket = _norm_ticket(m.group(1))
             if ticket not in credits:
                 credits[ticket] = memo
     return credits
@@ -211,11 +225,11 @@ def parse_credits_fallback(text):
         m = re.search(
             r'REFERENCE/CONTROL\s+NUMBER\s+(C[A-Z0-9]\d{7,8})', line, re.I)
         if m:
-            tickets.add(m.group(1).upper())
+            tickets.add(_norm_ticket(m.group(1)))
             continue
         m = re.search(r'RM:(C[A-Z0-9]\d{7,8})', line, re.I)
         if m:
-            tickets.add(m.group(1).upper())
+            tickets.add(_norm_ticket(m.group(1)))
     return tickets
 
 
