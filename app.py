@@ -64,27 +64,43 @@ def _is_scanned(path):
 
 
 def _ocr_text(path):
-    """OCR a scanned PDF one page at a time (300 DPI, --psm 6)."""
-    from pdf2image import convert_from_path
-    import pytesseract
+    """OCR a scanned PDF one page at a time via CLI subprocess pipeline.
 
+    Uses pdftoppm → tesseract directly so full-resolution images never
+    load into Python memory.  Critical for the 512 MB Render free tier.
+    Grayscale at 200 DPI — sufficient for printed control tickets.
+    """
     with pdfplumber.open(path) as pdf:
         n = len(pdf.pages)
 
     parts = []
     for pg in range(1, n + 1):
+        prefix = os.path.join(tempfile.gettempdir(),
+                              f'ocr_{os.getpid()}_{pg}')
+        pgm = prefix + '.pgm'
         try:
-            imgs = convert_from_path(
-                path, first_page=pg, last_page=pg,
-                dpi=300, fmt='jpeg',
+            # Render single page to grayscale PGM on disk (not in Python)
+            subprocess.run(
+                ['pdftoppm', '-f', str(pg), '-l', str(pg),
+                 '-gray', '-r', '200', '-singlefile', path, prefix],
+                capture_output=True, timeout=60,
             )
-            if imgs:
-                parts.append(
-                    pytesseract.image_to_string(imgs[0], config='--psm 6'))
-                del imgs
-                gc.collect()
+            if not os.path.exists(pgm):
+                continue
+
+            # OCR the on-disk image — Python never touches pixel data
+            r = subprocess.run(
+                ['tesseract', pgm, 'stdout', '--psm', '6'],
+                capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                parts.append(r.stdout)
         except Exception:
             continue
+        finally:
+            _rm(pgm)
+            gc.collect()
+
     return '\n'.join(parts)
 
 
