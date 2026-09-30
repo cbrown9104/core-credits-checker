@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Credits Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 35px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .form-section {
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            left: -9999px;
+        }
+
+        .file-input-label {
+            display: block;
+            padding: 12px 16px;
+            background: #f5f5f5;
+            border: 2px dashed #999;
+            border-radius: 8px;
+            cursor: pointer;
+            text-align: center;
+            color: #666;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .file-input-label:hover {
+            background: #efefef;
+            border-color: #667eea;
+            color: #667eea;
+        }
+
+        .file-name {
+            font-size: 12px;
+            color: #999;
+            margin-top: 4px;
+        }
+
+        .file-name.selected {
+            color: #28a745;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .results-header {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .results-stat {
+            display: inline-block;
+            margin-right: 30px;
+            margin-bottom: 10px;
+        }
+
+        .results-stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .results-stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+
+        .results-table thead {
+            background: #f8f9fa;
+        }
+
+        .results-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #333;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .results-table td {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            font-size: 13px;
+            color: #555;
+        }
+
+        .results-table tr:hover {
+            background: #f5f5f5;
+        }
+
+        .error {
+            display: none;
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .success-badge {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .reset-button {
+            background: #6c757d;
+            margin-top: 15px;
+        }
+
+        .reset-button:hover {
+            box-shadow: 0 10px 20px rgba(108, 117, 125, 0.4);
+        }
+
+        .no-results {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Core Credits Checker</h1>
+            <p>Identify unclaimed core returns and recover lost revenue</p>
+        </div>
+
+        <div class="error" id="errorMessage"></div>
+
+        <div class="form-section">
+            <div class="form-group">
+                <label for="shipperPdf">Step 1: GCRS Shipper Report (PDF)</label>
+                <div class="file-input-wrapper">
+                    <input type="file" id="shipperPdf" accept=".pdf" required>
+                    <label for="shipperPdf" class="file-input-label">
+                        Click to select shipper PDF or drag and drop
+                    </label>
+                </div>
+                <div class="file-name" id="shipperFileName"></div>
+            </div>
+
+            <div class="form-group">
+                <label for="creditPdf">Step 2: Core Return Credit Memo (PDF)</label>
+                <div class="file-input-wrapper">
+                    <input type="file" id="creditPdf" accept=".pdf" required>
+                    <label for="creditPdf" class="file-input-label">
+                        Click to select credit memo PDF or drag and drop
+                    </label>
+                </div>
+                <div class="file-name" id="creditFileName"></div>
+            </div>
+        </div>
+
+        <button id="submitBtn" onclick="checkCores()">Analyze PDFs</button>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processing your files...</p>
+        </div>
+
+        <div class="results" id="results">
+            <div class="results-header">
+                <div class="results-stat">
+                    <div class="results-stat-value" id="uncountClaimedCount">0</div>
+                    <div class="results-stat-label">Unclaimed Cores</div>
+                </div>
+                <div class="results-stat">
+                    <div class="results-stat-value" id="totalAmount">$0.00</div>
+                    <div class="results-stat-label">Total Value</div>
+                </div>
+            </div>
+
+            <div id="resultsList"></div>
+            <button class="reset-button" onclick="resetForm()">Check Another File</button>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('shipperPdf').addEventListener('change', function(e) {
+            updateFileName('shipperFileName', this.files[0]);
+        });
+
+        document.getElementById('creditPdf').addEventListener('change', function(e) {
+            updateFileName('creditFileName', this.files[0]);
+        });
+
+        function updateFileName(elementId, file) {
+            const elem = document.getElementById(elementId);
+            if (file) {
+                elem.textContent = String.fromCharCode(10003) + ' ' + file.name;
+                elem.classList.add('selected');
+            } else {
+                elem.textContent = '';
+                elem.classList.remove('selected');
+            }
+        }
+
+        ['shipperPdf', 'creditPdf'].forEach(id => {
+            const input = document.getElementById(id);
+            const label = input.nextElementSibling;
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                label.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                label.addEventListener(eventName, () => {
+                    label.style.borderColor = '#667eea';
+                    label.style.background = '#f0f4ff';
+                });
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                label.addEventListener(eventName, () => {
+                    label.style.borderColor = '#999';
+                    label.style.background = '#f5f5f5';
+                });
+            });
+
+            label.addEventListener('drop', (e) => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                input.files = files;
+                updateFileName(id === 'shipperPdf' ? 'shipperFileName' : 'creditFileName', files[0]);
+            });
+        });
+
+        async function checkCores() {
+            const shipperPdf = document.getElementById('shipperPdf').files[0];
+            const creditPdf = document.getElementById('creditPdf').files[0];
+            const errorDiv = document.getElementById('errorMessage');
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+
+            errorDiv.classList.remove('show');
+            errorDiv.textContent = '';
+            results.style.display = 'none';
+
+            if (!shipperPdf || !creditPdf) {
+                errorDiv.textContent = 'Please select both PDF files before proceeding.';
+                errorDiv.classList.add('show');
+                return;
+            }
+
+            if (!shipperPdf.type.includes('pdf') || !creditPdf.type.includes('pdf')) {
+                errorDiv.textContent = 'Please select valid PDF files.';
+                errorDiv.classList.add('show');
+                return;
+            }
+
+            loading.style.display = 'block';
+            document.getElementById('submitBtn').disabled = true;
+
+            try {
+                const formData = new FormData();
+                formData.append('shipper_pdf', shipperPdf);
+                formData.append('credit_pdf', creditPdf);
+
+                const response = await fetch('/api/check-cores', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    displayResults(data);
+                } else {
+                    throw new Error(data.error || 'An error occurred processing the files.');
+                }
+            } catch (error) {
+                errorDiv.textContent = error.message;
+                errorDiv.classList.add('show');
+            } finally {
+                loading.style.display = 'none';
+                document.getElementById('submitBtn').disabled = false;
+            }
+        }
+
+        function displayResults(data) {
+            const results = document.getElementById('results');
+            const resultsList = document.getElementById('resultsList');
+
+            document.getElementById('uncountClaimedCount').textContent = data.unclaimed_count;
+            document.getElementById('totalAmount').textContent = '$' + data.total_amount.toFixed(2);
+
+            if (data.results.length === 0) {
+                resultsList.innerHTML = '<div class="no-results">No unclaimed cores found. All shipments have been credited.</div>';
+            } else {
+                let tableHTML = '<table class="results-table"><thead><tr><th>Control #</th><th>Part #</th><th>Qty</th><th>Amount</th></tr></thead><tbody>';
+                data.results.forEach(item => {
+                    tableHTML += '<tr>' +
+                        '<td><strong>' + escapeHtml(item.control) + '</strong></td>' +
+                        '<td>' + escapeHtml(item.part) + '</td>' +
+                        '<td>' + escapeHtml(item.qty) + '</td>' +
+                        '<td>' + escapeHtml(item.amount) + '</td>' +
+                    '</tr>';
+                });
+                tableHTML += '</tbody></table>';
+                resultsList.innerHTML = tableHTML;
+            }
+
+            results.style.display = 'block';
+            results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function resetForm() {
+            document.getElementById('shipperPdf').value = '';
+            document.getElementById('creditPdf').value = '';
+            document.getElementById('shipperFileName').textContent = '';
+            document.getElementById('creditFileName').textContent = '';
+            document.getElementById('shipperFileName').classList.remove('selected');
+            document.getElementById('creditFileName').classList.remove('selected');
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('errorMessage').classList.remove('show');
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+    </script>
+</body>
+</html>
