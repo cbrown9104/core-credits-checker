@@ -4,20 +4,21 @@ Core Credits Checker – Flask web app
 Compares GCRS Dealer Shipper PDFs (scanned) against Mopar Weekly Global
 Core Return Credit Memo PDFs (text-based) to find unclaimed core returns.
 
-Memory-safe for Render free tier:
-- OCR one page at a time via pdftoppm + tesseract on disk
-- Page count via pdfinfo (no pdfplumber open for OCR)
+Memory-safe for a 512 MB–2 GB instance:
+- One pdftoppm + one tesseract per chunk; page images deleted immediately
+- Long edge capped at 1650 px (150 DPI letter) so a bad page box cannot balloon
+- Page count via pdfinfo; scan check via pdftotext (no pdfplumber on the OCR path)
 - Shipper scans over MAX_OCR_PAGES are split into chunks, OCR'd, then merged
 - One shipper PDF per request
 """
 from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
-import pdfplumber
 import subprocess
 import re
 import tempfile
 import os
 import gc
+import shutil
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
@@ -25,6 +26,9 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
 # Cap OCR pages so a huge scan can't run until OOM/timeout (Starter-safe default)
 MAX_OCR_PAGES = 20
 OCR_DPI = 150  # was 200; lower RAM/time with small accuracy tradeoff
+# Letter at 150 DPI is 1650 px on the long edge. Cap so a bad page box
+# cannot rasterize into a multi-hundred-MB bitmap. Normal scans unchanged.
+OCR_SCALE_TO = 1650
 
 # ── regex ────────────────────────────────────────────────────────────────
 CTRL_RE = re.compile(r'^([Cc©€6][A-Za-z0-9]\d{7,8})\b')
@@ -47,13 +51,17 @@ SKIP = frozenset([
 
 
 def _is_scanned(path):
-    """True when the PDF has no selectable text (image-only scan)."""
+    """True when the PDF has no selectable text (image-only scan).
+
+    Uses pdftotext on the first pages only so a scanned shipper is not
+    also opened by pdfplumber (that second parse is pure RAM).
+    """
     try:
-        with pdfplumber.open(path) as pdf:
-            for page in pdf.pages[:3]:
-                if len((page.extract_text() or '').strip()) > 100:
-                    return False
-        return True
+        r = subprocess.run(
+            ['pdftotext', '-f', '1', '-l', '3', '-layout', path, '-'],
+            capture_output=True, text=True, timeout=30,
+        )
+        return len((r.stdout or '').strip()) <= 100
     except Exception:
         return True
 
@@ -73,56 +81,55 @@ def _page_count(path):
     return 1
 
 
-def _split_pdf_chunks(path, chunk_size=MAX_OCR_PAGES):
-    """Write temp PDFs of ≤chunk_size pages each. Returns list of paths."""
-    from pypdf import PdfReader, PdfWriter
-    reader = PdfReader(path)
-    total = len(reader.pages)
-    chunks = []
-    for start in range(0, total, chunk_size):
-        writer = PdfWriter()
-        end = min(start + chunk_size, total)
-        for i in range(start, end):
-            writer.add_page(reader.pages[i])
-        chunk_path = os.path.join(
-            tempfile.gettempdir(),
-            f'ocr_chunk_{os.getpid()}_{start}_{end}.pdf',
-        )
-        with open(chunk_path, 'wb') as f:
-            writer.write(f)
-        chunks.append(chunk_path)
-    return chunks
-
-
 def _ocr_pages(path):
-    """OCR every page of a PDF one at a time via CLI on disk."""
+    """OCR every page via one pdftoppm and one tesseract, files on disk.
+
+    A single tesseract process loads the model once (per-page CLI startup
+    was burning the 300s worker budget). Page images are removed before return.
+    """
     n = _page_count(path)
-    parts = []
-    for pg in range(1, n + 1):
-        prefix = os.path.join(
-            tempfile.gettempdir(), f'ocr_{os.getpid()}_{pg}'
+    if n < 1:
+        return ''
+    td = tempfile.mkdtemp(prefix=f'ocr_{os.getpid()}_')
+    try:
+        prefix = os.path.join(td, 'p')
+        subprocess.run(
+            ['pdftoppm', '-gray', '-r', str(OCR_DPI),
+             '-scale-to', str(OCR_SCALE_TO), path, prefix],
+            capture_output=True, timeout=max(60, 15 * n),
         )
-        pgm = prefix + '.pgm'
-        try:
-            subprocess.run(
-                ['pdftoppm', '-f', str(pg), '-l', str(pg),
-                 '-gray', '-r', str(OCR_DPI), '-singlefile', path, prefix],
-                capture_output=True, timeout=60,
-            )
-            if not os.path.exists(pgm):
-                continue
-            r = subprocess.run(
-                ['tesseract', pgm, 'stdout', '--psm', '6'],
-                capture_output=True, text=True, timeout=60,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                parts.append(r.stdout)
-        except Exception:
-            continue
-        finally:
-            _rm(pgm)
-            gc.collect()
-    return '\n'.join(parts)
+        images = []
+        for name in os.listdir(td):
+            if name.endswith('.pgm'):
+                images.append(os.path.join(td, name))
+        images.sort(key=_pgm_ord)
+        if not images:
+            return ''
+        list_path = os.path.join(td, 'pages.txt')
+        with open(list_path, 'w') as fh:
+            for img in images:
+                fh.write(img + '\n')
+        env = os.environ.copy()
+        env['OMP_THREAD_LIMIT'] = '1'
+        r = subprocess.run(
+            ['tesseract', list_path, 'stdout', '--psm', '6'],
+            capture_output=True, text=True,
+            timeout=max(90, 25 * n),
+            env=env,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout
+        return ''
+    except Exception:
+        return ''
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+        gc.collect()
+
+
+def _pgm_ord(path):
+    m = re.search(r'-(\d+)\.pgm$', os.path.basename(path))
+    return int(m.group(1)) if m else 0
 
 
 def _ocr_text(path):
@@ -131,18 +138,35 @@ def _ocr_text(path):
     if n <= MAX_OCR_PAGES:
         return _ocr_pages(path)
 
-    # Transparent split: dealer still sees one merged result
-    chunk_paths = _split_pdf_chunks(path, MAX_OCR_PAGES)
+    # One chunk at a time: write it, OCR it, delete it. Do not keep every
+    # chunk PDF (or its page images) alive for the whole document.
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(path)
+    total = len(reader.pages)
     parts = []
     try:
-        for cp in chunk_paths:
-            text = _ocr_pages(cp)
-            if text:
-                parts.append(text)
-            gc.collect()
+        for start in range(0, total, MAX_OCR_PAGES):
+            end = min(start + MAX_OCR_PAGES, total)
+            writer = PdfWriter()
+            for i in range(start, end):
+                writer.add_page(reader.pages[i])
+            chunk_path = os.path.join(
+                tempfile.gettempdir(),
+                f'ocr_chunk_{os.getpid()}_{start}_{end}.pdf',
+            )
+            try:
+                with open(chunk_path, 'wb') as fh:
+                    writer.write(fh)
+                del writer
+                text = _ocr_pages(chunk_path)
+                if text:
+                    parts.append(text)
+            finally:
+                _rm(chunk_path)
+                gc.collect()
     finally:
-        for cp in chunk_paths:
-            _rm(cp)
+        del reader
+        gc.collect()
     return '\n'.join(parts)
 
 
@@ -158,7 +182,8 @@ def _pdftotext(path):
 
 
 def _pdfplumber_text(path):
-    """Fallback: extract with pdfplumber."""
+    """Fallback: extract with pdfplumber. Imported only if pdftotext fails."""
+    import pdfplumber
     parts = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:

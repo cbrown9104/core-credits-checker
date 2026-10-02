@@ -516,7 +516,7 @@
                     const snippet = (raw || '').trim().slice(0, 120);
                     const looksHtml = /<!DOCTYPE|<html/i.test(snippet) || resp.status === 502 || resp.status === 503;
                     throw new Error(
-                        'Server returned a non-JSON response (often an out-of-memory crash on the free tier). ' +
+                        'Server returned a non-JSON response (worker timeout or out-of-memory). ' +
                         'Try one smaller shipper PDF at a time. ' +
                         (snippet ? 'Response starts with: ' + snippet : 'HTTP ' + resp.status)
                     );
