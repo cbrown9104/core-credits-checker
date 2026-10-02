@@ -7,6 +7,7 @@ Core Return Credit Memo PDFs (text-based) to find unclaimed core returns.
 Memory-safe for Render free tier:
 - OCR one page at a time via pdftoppm + tesseract on disk
 - Page count via pdfinfo (no pdfplumber open for OCR)
+- Shipper scans over MAX_OCR_PAGES are split into chunks, OCR'd, then merged
 - One shipper PDF per request
 """
 from flask import Flask, render_template, request, jsonify
@@ -72,14 +73,30 @@ def _page_count(path):
     return 1
 
 
-def _ocr_text(path):
-    """OCR a scanned PDF one page at a time via CLI on disk."""
-    n = _page_count(path)
-    if n > MAX_OCR_PAGES:
-        raise ValueError(
-            f'Shipper has {n} pages; OCR is capped at {MAX_OCR_PAGES} '
-            f'pages per run. Split the PDF or raise MAX_OCR_PAGES.'
+def _split_pdf_chunks(path, chunk_size=MAX_OCR_PAGES):
+    """Write temp PDFs of ≤chunk_size pages each. Returns list of paths."""
+    from pypdf import PdfReader, PdfWriter
+    reader = PdfReader(path)
+    total = len(reader.pages)
+    chunks = []
+    for start in range(0, total, chunk_size):
+        writer = PdfWriter()
+        end = min(start + chunk_size, total)
+        for i in range(start, end):
+            writer.add_page(reader.pages[i])
+        chunk_path = os.path.join(
+            tempfile.gettempdir(),
+            f'ocr_chunk_{os.getpid()}_{start}_{end}.pdf',
         )
+        with open(chunk_path, 'wb') as f:
+            writer.write(f)
+        chunks.append(chunk_path)
+    return chunks
+
+
+def _ocr_pages(path):
+    """OCR every page of a PDF one at a time via CLI on disk."""
+    n = _page_count(path)
     parts = []
     for pg in range(1, n + 1):
         prefix = os.path.join(
@@ -105,6 +122,27 @@ def _ocr_text(path):
         finally:
             _rm(pgm)
             gc.collect()
+    return '\n'.join(parts)
+
+
+def _ocr_text(path):
+    """OCR a scanned PDF; auto-split into ≤MAX_OCR_PAGES chunks when needed."""
+    n = _page_count(path)
+    if n <= MAX_OCR_PAGES:
+        return _ocr_pages(path)
+
+    # Transparent split: dealer still sees one merged result
+    chunk_paths = _split_pdf_chunks(path, MAX_OCR_PAGES)
+    parts = []
+    try:
+        for cp in chunk_paths:
+            text = _ocr_pages(cp)
+            if text:
+                parts.append(text)
+            gc.collect()
+    finally:
+        for cp in chunk_paths:
+            _rm(cp)
     return '\n'.join(parts)
 
 
