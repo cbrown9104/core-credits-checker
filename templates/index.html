@@ -572,7 +572,7 @@
                     html += '<tr>' +
                         '<td class="control">' + esc(r.control) + '</td>' +
                         '<td>' + esc(r.claim) + '</td>' +
-                        '<td>' + esc(r.part) + '</td>' +
+                        '<td>' + esc(r.part) + (r.part_flagged ? ' [FLAG]' : '') + '</td>' +
                         '<td>' + esc(r.description) + '</td>' +
                         '<td>' + esc(r.qty) + '</td>' +
                         '<td class="amount">' + fmtDollars(amt) + '</td></tr>';
@@ -591,7 +591,7 @@
             if (!lastResults || !lastResults.results.length) return;
             const rows = [['Control','Claim','Part','Description','Qty','Amount']];
             lastResults.results.forEach(r => {
-                rows.push([r.control, r.claim, r.part, r.description, r.qty, r.amount]);
+                rows.push([r.control, r.claim, r.part_flagged ? (r.part + ' [FLAG]') : r.part, r.description, r.qty, r.amount]);
             });
             const csv = rows.map(r => r.map(c => '"' + String(c||'').replace(/"/g,'""') + '"').join(',')).join('\n');
             const blob = new Blob([csv], { type: 'text/csv' });

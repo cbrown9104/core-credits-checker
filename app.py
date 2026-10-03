@@ -37,6 +37,11 @@ WRAP_RE = re.compile(r'^\s*(\d+)\s+([\d,]+\.\d{2})\s*$')
 CLAIM_RE = re.compile(r'^\d{5,6}$')
 CM_HDR_RE = re.compile(r'CREDIT MEMO NUMBER:\s*03181000(CC\d+)')
 CM_REF_RE = re.compile(r'REFERENCE/CONTROL\s+NUMBER\s+(\S+.*)')
+# Optional leading U, 7–9 digits, 1–2 letters. Letter I is never valid;
+# normalize_part_number maps I → 1 before this check.
+_PART_RE = re.compile(r'^U?\d{7,9}[A-Z]{1,2}$')
+# Near-miss (when a token is already a part-number candidate): flag, don't drop.
+_PART_NEAR_RE = re.compile(r'^U?\d{5,12}[A-Z]{1,3}$')
 
 SKIP = frozenset([
     'checkoff', 'ticket number', 'part number', 'description',
@@ -204,6 +209,34 @@ def _norm_ticket(raw):
     return _norm((raw or '').strip())
 
 
+def normalize_part_number(raw):
+    """Normalize a core part number so shipper and credit memo forms compare equal.
+
+    Order: uppercase, letter I → digit 1 (OCR misread; I is never valid),
+    strip non-alphanumeric, then validate. Shape is an optional leading U
+    (kept — it is not noise), 7–9 digits, then 1–2 letters. Some numbers
+    have no leading U. If the shape does not match, the cleaned value is
+    kept and flagged rather than dropped.
+
+    Returns (normalized, flagged).
+    """
+    s = (raw or '').upper()
+    s = s.replace('I', '1')
+    s = re.sub(r'[^A-Z0-9]', '', s)
+    if not s:
+        return '', False
+    return s, _PART_RE.fullmatch(s) is None
+
+
+def parts_match(a, b):
+    """True when both part numbers normalize to the same valid value."""
+    na, fa = normalize_part_number(a)
+    nb, fb = normalize_part_number(b)
+    if fa or fb or not na or not nb:
+        return False
+    return na == nb
+
+
 def _fix_qty(s):
     s = s.replace('i', '1').replace('l', '1').replace('L', '1')
     s = s.replace('O', '0').replace('o', '0')
@@ -245,9 +278,11 @@ def parse_shipper(text):
             claim = ''
             if tokens and CLAIM_RE.match(tokens[0]):
                 claim = tokens.pop(0)
-            part = tokens.pop(0) if tokens else ''
+            part, part_flagged = normalize_part_number(
+                tokens.pop(0) if tokens else '')
             desc = ' '.join(tokens)
-            results.append(_row(control, claim, part, desc, qty, amount))
+            results.append(_row(
+                control, claim, part, desc, qty, amount, part_flagged))
         else:
             qty, amount = '1', '0.00'
             if i < len(lines):
@@ -259,15 +294,18 @@ def parse_shipper(text):
             claim = ''
             if tokens and CLAIM_RE.match(tokens[0]):
                 claim = tokens.pop(0)
-            part = tokens.pop(0) if tokens else ''
+            part, part_flagged = normalize_part_number(
+                tokens.pop(0) if tokens else '')
             desc = ' '.join(tokens)
-            results.append(_row(control, claim, part, desc, qty, amount))
+            results.append(_row(
+                control, claim, part, desc, qty, amount, part_flagged))
     return results
 
 
-def _row(ctrl, claim, part, desc, qty, amt):
+def _row(ctrl, claim, part, desc, qty, amt, part_flagged=False):
     return dict(control=ctrl, claim=claim, part=part,
-                description=desc, qty=qty, amount=amt)
+                description=desc, qty=qty, amount=amt,
+                part_flagged=bool(part_flagged))
 
 
 def parse_credits(text):
@@ -298,6 +336,58 @@ def parse_credits_fallback(text):
         if m:
             tickets.add(_norm_ticket(m.group(1)))
     return tickets
+
+
+def _consider_part_token(tok):
+    """(normalized, flagged) if tok is a part number, else None.
+
+    Credit-memo ids starting with 0318 are not part numbers.
+    """
+    norm, flagged = normalize_part_number(tok)
+    if not norm or norm.startswith('0318'):
+        return None
+    if not flagged:
+        return norm, False
+    if _PART_NEAR_RE.fullmatch(norm):
+        return norm, True
+    return None
+
+
+def credit_part_numbers(text):
+    """Map control ticket → (normalized part, flagged) from credit-memo text.
+
+    Uses the same normalize_part_number() as the shipper parser so a later
+    comparison is on normalized forms. Checks the REFERENCE/CONTROL line and
+    the next line. A valid part wins over a flagged near-miss.
+    """
+    lines = (text or '').split('\n')
+    out = {}
+    ref_re = re.compile(r'REFERENCE/CONTROL\s+NUMBER\s+(\S+)', re.I)
+    rm_re = re.compile(r'RM:(C[A-Z0-9]\d{7,8})', re.I)
+    for i, line in enumerate(lines):
+        m = ref_re.search(line) or rm_re.search(line)
+        if not m:
+            continue
+        ticket = _norm_ticket(m.group(1))
+        if ticket in out:
+            continue
+        found = []
+        for tok in line.split():
+            hit = _consider_part_token(tok)
+            if hit:
+                found.append(hit)
+        # Part number sometimes wraps onto the next line. Do not look ahead
+        # once this line already has one, so we don't steal the next ticket's.
+        if not found and i + 1 < len(lines):
+            for tok in lines[i + 1].split():
+                hit = _consider_part_token(tok)
+                if hit:
+                    found.append(hit)
+        if not found:
+            continue
+        good = [h for h in found if not h[1]]
+        out[ticket] = good[0] if good else found[0]
+    return out
 
 
 @app.route('/')
@@ -353,6 +443,7 @@ def check_cores():
 
             all_credited = set()
             credit_details = {}
+            credit_part_map = {}
             for cf in credit_files:
                 p = os.path.join(tmp, _safe(cf.filename))
                 cf.save(p)
@@ -365,14 +456,24 @@ def check_cores():
                 elif text:
                     all_credited.update(parse_credits_fallback(text))
                 else:
-                    ocr_text = _ocr_text(p)
-                    if ocr_text:
-                        all_credited.update(parse_credits_fallback(ocr_text))
+                    text = _ocr_text(p)
+                    if text:
+                        all_credited.update(parse_credits_fallback(text))
+                if text:
+                    for t, pair in credit_part_numbers(text).items():
+                        credit_part_map.setdefault(t, pair)
                 _rm(p)
                 gc.collect()
 
         unclaimed, claimed = [], []
         for item in all_items:
+            cp = credit_part_map.get(item['control'])
+            if cp:
+                # Shipper part was normalized in parse_shipper; credit part
+                # in credit_part_numbers. Compare those normalized forms.
+                item['credit_part'] = cp[0]
+                item['credit_part_flagged'] = cp[1]
+                item['part_match'] = parts_match(item.get('part'), cp[0])
             if item['control'] in all_credited:
                 item['memo'] = credit_details.get(item['control'], '')
                 claimed.append(item)
