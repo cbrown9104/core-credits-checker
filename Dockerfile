@@ -14,4 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 10000
-CMD ["gunicorn", "app:app", "--timeout", "300", "--workers", "1", "--bind", "0.0.0.0:10000"]
+# 1 worker (jobs live in its memory) + threads so progress polling and
+# downloads are answered while a reconciliation run is working.
+CMD ["gunicorn", "app:app", "--timeout", "300", "--workers", "1", "--threads", "4", "--bind", "0.0.0.0:10000"]
