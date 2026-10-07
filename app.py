@@ -11,8 +11,10 @@ Memory-safe for a 512 MB–2 GB instance:
 - Shipper scans over MAX_OCR_PAGES are split into chunks, OCR'd, then merged
 - One shipper PDF per request
 """
-from flask import Flask, render_template, request, jsonify
+from flask import (Flask, render_template, request, jsonify, send_file,
+                   abort)
 from werkzeug.utils import secure_filename
+import datetime
 import subprocess
 import re
 import tempfile
@@ -20,8 +22,13 @@ import os
 import gc
 import shutil
 
+from recon import engine as recon_engine
+from recon import jobs as recon_jobs
+from recon.master import MasterError
+from recon.shipper import _shipment_from_header, read_shipper_pdf
+
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB max upload
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB max upload
 
 # Cap OCR pages so a huge scan can't run until OOM/timeout (Starter-safe default)
 MAX_OCR_PAGES = 20
@@ -212,19 +219,22 @@ def _norm_ticket(raw):
 def normalize_part_number(raw):
     """Normalize a core part number so shipper and credit memo forms compare equal.
 
-    Order: uppercase, letter I → digit 1 (OCR misread; I is never valid),
-    strip non-alphanumeric, then validate. Shape is an optional leading U
+    Order: uppercase, strip non-alphanumeric, letter I → digit 1 in the
+    digit body (OCR misread), then validate. The two-letter suffix keeps
+    its letters — AI is a real Mopar suffix. Shape is an optional leading U
     (kept — it is not noise), 7–9 digits, then 1–2 letters. Some numbers
     have no leading U. If the shape does not match, the cleaned value is
     kept and flagged rather than dropped.
 
     Returns (normalized, flagged).
     """
-    s = (raw or '').upper()
-    s = s.replace('I', '1')
-    s = re.sub(r'[^A-Z0-9]', '', s)
+    s = re.sub(r'[^A-Z0-9]', '', (raw or '').upper())
     if not s:
         return '', False
+    # I -> 1 in the digit body only; the two-letter suffix is kept as read
+    # (Mopar does use suffixes such as AI: 68085908AI, U8090720AI).
+    if len(s) > 2:
+        s = s[:-2].replace('I', '1') + s[-2:]
     return s, _PART_RE.fullmatch(s) is None
 
 
@@ -251,11 +261,16 @@ def parse_shipper(text):
     results = []
     lines = text.split('\n')
     i = 0
+    shp = ''
     while i < len(lines):
         line = lines[i].strip()
         i += 1
         if not line:
             continue
+        if 'SHP' in line.upper():
+            found = _shipment_from_header(line.upper())
+            if found:
+                shp = found
         low = line.lower()
         if any(kw in low for kw in SKIP):
             continue
@@ -272,7 +287,8 @@ def parse_shipper(text):
             before = rest[:amt.start()].strip()
             tokens = before.split()
             if not tokens:
-                results.append(_row(control, '', '', '', '1', amount))
+                results.append(_row(control, '', '', '', '1', amount,
+                                    shipper_date=shp))
                 continue
             qty = _fix_qty(tokens.pop())
             claim = ''
@@ -282,7 +298,8 @@ def parse_shipper(text):
                 tokens.pop(0) if tokens else '')
             desc = ' '.join(tokens)
             results.append(_row(
-                control, claim, part, desc, qty, amount, part_flagged))
+                control, claim, part, desc, qty, amount, part_flagged,
+                shipper_date=shp))
         else:
             qty, amount = '1', '0.00'
             if i < len(lines):
@@ -298,14 +315,37 @@ def parse_shipper(text):
                 tokens.pop(0) if tokens else '')
             desc = ' '.join(tokens)
             results.append(_row(
-                control, claim, part, desc, qty, amount, part_flagged))
+                control, claim, part, desc, qty, amount, part_flagged,
+                shipper_date=shp))
     return results
 
 
-def _row(ctrl, claim, part, desc, qty, amt, part_flagged=False):
+def _scan_rows(path):
+    """Scanned shipper -> rows, using the same word-box OCR reader as the
+    Full Reconciliation page (200 DPI; handles a C read as 0/6/©, glued
+    qty/amount, stray check marks, and reads each page's GCRS SHP# date)."""
+    rows = []
+    seen = set()
+    for page in read_shipper_pdf(path):
+        for ln in page['lines']:
+            if ln['ticket'] in seen:
+                continue
+            seen.add(ln['ticket'])
+            amt = ln['amount']
+            rows.append(_row(
+                ln['ticket'], str(ln['claim'] or ''), ln['part'],
+                ln['description'], str(ln['qty'] or 1),
+                f'{amt:,.2f}' if amt is not None else '0.00',
+                not ln['part_ok'], shipper_date=page['shipment_id'] or ''))
+    return rows
+
+
+def _row(ctrl, claim, part, desc, qty, amt, part_flagged=False,
+         shipper_date=''):
     return dict(control=ctrl, claim=claim, part=part,
                 description=desc, qty=qty, amount=amt,
-                part_flagged=bool(part_flagged))
+                part_flagged=bool(part_flagged),
+                shipper_date=shipper_date or '')
 
 
 def parse_credits(text):
@@ -426,11 +466,11 @@ def check_cores():
                 sf.save(p)
                 if _is_scanned(p):
                     ocr_used = True
-                    text = _ocr_text(p)
+                    all_items.extend(_scan_rows(p))
                 else:
                     text = _pdftotext(p) or _pdfplumber_text(p)
-                if text:
-                    all_items.extend(parse_shipper(text))
+                    if text:
+                        all_items.extend(parse_shipper(text))
                 _rm(p)
                 gc.collect()
 
@@ -485,10 +525,10 @@ def check_cores():
                 float(it.get('amount', '0').replace(',', '') or '0')
                 for it in lst), 2)
 
-        unclaimed.sort(
-            key=lambda x: float(
-                x.get('amount', '0').replace(',', '') or '0'),
-            reverse=True)
+        # Standing rule: oldest shipper document date first (the core
+        # return window runs from the ship date), not by dollar amount.
+        unclaimed.sort(key=lambda x: (x.get('shipper_date') or '9999',
+                                      x.get('control', '')))
 
         return jsonify({
             'success': True,
@@ -506,6 +546,115 @@ def check_cores():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Processing error: {str(e)}'}), 500
+
+
+# ── Full Reconciliation ────────────────────────────────────────────────
+@app.route('/reconcile')
+def reconcile_page():
+    return render_template('reconcile.html')
+
+
+def _today_central():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo('America/Chicago')).date()
+    except Exception:
+        return (datetime.datetime.utcnow() -
+                datetime.timedelta(hours=5)).date()
+
+
+def _flag(name, default):
+    v = request.form.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ('1', 'true', 'on', 'yes')
+
+
+def _save_uploads(files, folder, allowed, label):
+    saved = []
+    for n, f in enumerate(files):
+        if not f or not f.filename:
+            continue
+        ext = os.path.splitext(f.filename)[1].lower()
+        if ext not in allowed:
+            raise ValueError(f'{f.filename}: {label} must be '
+                             f'{" / ".join(sorted(allowed))}.')
+        safe = secure_filename(f.filename) or ('upload' + ext)
+        path = os.path.join(folder, f'{n:02d}_{safe}')
+        f.save(path)
+        saved.append((path, os.path.basename(f.filename)))
+    return saved
+
+
+@app.route('/api/reconcile', methods=['POST'])
+def api_reconcile():
+    recon_jobs.cleanup()
+    job_id, d = recon_jobs.new_job()
+    inbox = os.path.join(d, 'in')
+    try:
+        master = _save_uploads([request.files.get('master')], inbox,
+                               {'.xlsx', '.xlsm'}, 'The master workbook')
+        memos = _save_uploads(request.files.getlist('memos'), inbox,
+                              {'.pdf'}, 'Credit memos')
+        shippers = _save_uploads(request.files.getlist('shippers'), inbox,
+                                 {'.pdf'}, 'Shipper scans')
+        dc = _save_uploads(request.files.getlist('dc'), inbox,
+                           {'.csv', '.txt', '.xlsx', '.xlsm', '.xls'},
+                           'DealerCONNECT files')
+    except ValueError as e:
+        shutil.rmtree(d, ignore_errors=True)
+        return jsonify({'error': str(e)}), 400
+    dc_text = request.form.get('dc_text', '')
+    if not (master or memos or shippers or dc or dc_text.strip()):
+        shutil.rmtree(d, ignore_errors=True)
+        return jsonify({'error': 'Add at least one file: the master '
+                                 'workbook, a credit memo, a shipper scan '
+                                 'or DealerCONNECT data.'}), 400
+    try:
+        asof = datetime.date.fromisoformat(request.form.get('asof', ''))
+    except ValueError:
+        asof = _today_central()
+    try:
+        threshold = max(1, min(365, int(request.form.get('threshold',
+                                                         60))))
+    except ValueError:
+        threshold = 60
+    dealer = re.sub(r'\D', '', request.form.get('dealer', ''))[:8]
+    opts = {
+        'asof': asof, 'threshold': threshold, 'dealer': dealer,
+        'mark_requested': _flag('mark_requested', True),
+        'apply_dc': _flag('apply_dc', True),
+        'include_prev': _flag('include_prev', False),
+    }
+    inputs = {'master': master[0] if master else None, 'memos': memos,
+              'shippers': shippers, 'dc': dc, 'dc_text': dc_text}
+    out_dir = os.path.join(d, 'out')
+
+    def work(progress):
+        try:
+            return recon_engine.run(inputs, opts, out_dir, progress)
+        except MasterError as e:
+            raise RuntimeError(str(e))
+
+    recon_jobs.start(job_id, work)
+    return jsonify({'job_id': job_id})
+
+
+@app.route('/api/jobs/<job_id>')
+def api_job(job_id):
+    job = recon_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'That run has expired or does not '
+                                 'exist. Start a new run.'}), 404
+    return jsonify(job)
+
+
+@app.route('/api/jobs/<job_id>/files/<path:name>')
+def api_job_file(job_id, name):
+    path = recon_jobs.output_path(job_id, name)
+    if not path:
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=name)
 
 
 def _safe(fn):

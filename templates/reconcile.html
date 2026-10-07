@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Reconciliation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            padding: 20px;
+            color: #e0e0e0;
+        }
+
+        .container { max-width: 1100px; margin: 0 auto; }
+
+        .header { text-align: center; margin-bottom: 30px; padding: 30px 20px 20px; }
+        .header h1 { color: #fff; font-size: 32px; margin-bottom: 6px; letter-spacing: -0.5px; }
+        .header p { color: #8888aa; font-size: 15px; }
+
+        .tabs { display: flex; justify-content: center; gap: 8px; margin: -14px 0 26px; }
+        .tab {
+            padding: 9px 18px; border-radius: 8px; border: 1px solid #2a2a4a;
+            background: #16213e; color: #8888aa; font-size: 14px; font-weight: 600;
+            text-decoration: none;
+        }
+        .tab:hover { color: #fff; border-color: #3a3a6a; }
+        .tab.active { background: #0f3460; color: #8ab4f8; border-color: #5a8dee; }
+
+        .card {
+            background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px;
+            padding: 26px; margin-bottom: 22px;
+        }
+
+        .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+        @media (max-width: 760px) { .upload-grid { grid-template-columns: 1fr; } }
+
+        .form-group label.title {
+            display: block; font-weight: 600; color: #b0b0cc; margin-bottom: 8px;
+            font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .form-group label.title .opt { color: #6a6a9a; text-transform: none; font-weight: 500; letter-spacing: 0; }
+
+        .drop-zone {
+            padding: 20px 14px; background: #0f3460; border: 2px dashed #3a3a6a;
+            border-radius: 8px; cursor: pointer; text-align: center; color: #7878aa;
+            font-weight: 500; font-size: 14px; transition: all 0.2s ease; min-height: 92px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; color: #8ab4f8; }
+        .drop-zone input[type="file"] { display: none; }
+        .hint { font-size: 11px; margin-top: 5px; color: #5a5a8a; line-height: 1.45; }
+
+        .file-list { margin-top: 8px; font-size: 12px; color: #6abf6a; }
+        .file-list span { display: block; padding: 2px 0; word-break: break-all; }
+
+        .paste-toggle {
+            margin-top: 8px; background: none; border: none; color: #8ab4f8;
+            font-size: 12px; cursor: pointer; text-decoration: underline; padding: 0;
+        }
+        textarea {
+            width: 100%; margin-top: 8px; min-height: 90px; background: #0f1a33; color: #c0c0e0;
+            border: 1px solid #3a3a6a; border-radius: 6px; padding: 8px; font-family: 'Courier New', monospace;
+            font-size: 12px; display: none;
+        }
+
+        .settings {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+            margin-top: 22px; padding-top: 20px; border-top: 1px solid #2a2a4a;
+        }
+        @media (max-width: 760px) { .settings { grid-template-columns: 1fr; } }
+        .settings label.title { font-size: 12px; }
+        .settings input[type="date"], .settings input[type="number"], .settings input[type="text"] {
+            width: 100%; padding: 9px 10px; background: #0f3460; color: #e0e0e0;
+            border: 1px solid #3a3a6a; border-radius: 6px; font-size: 14px;
+        }
+        .checks { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #b0b0cc; }
+        .checks label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+        .checks input { margin-top: 2px; }
+
+        .btn-row { margin-top: 22px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .btn-primary {
+            flex: 1; padding: 14px; background: linear-gradient(135deg, #5a8dee, #7c5ce7);
+            color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s ease;
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(90, 141, 238, 0.35); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-secondary {
+            padding: 12px 22px; background: #2a2a4a; color: #b0b0cc; border: 1px solid #3a3a6a;
+            border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        .btn-secondary:hover { background: #3a3a5a; color: #fff; }
+
+        .error-msg {
+            display: none; background: #3e1c24; border: 1px solid #6b2a36; color: #f0a0a0;
+            padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; font-size: 14px;
+        }
+        .error-msg.show { display: block; }
+
+        /* progress */
+        .progress { display: none; text-align: center; padding: 34px 20px; }
+        .spinner {
+            border: 4px solid #2a2a4a; border-top: 4px solid #5a8dee; border-radius: 50%;
+            width: 44px; height: 44px; animation: spin 1s linear infinite; margin: 0 auto 16px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .progress .msg { color: #e0e0f0; font-size: 15px; font-weight: 600; }
+        .progress .sub { color: #8888aa; font-size: 13px; margin-top: 6px; }
+        .progress ul { list-style: none; margin-top: 14px; font-size: 12px; color: #6a6a9a; line-height: 1.7; }
+
+        /* results */
+        .results { display: none; }
+        .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+        @media (max-width: 760px) { .stats-row { grid-template-columns: 1fr 1fr; } }
+        .stat-box {
+            background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px;
+            padding: 18px 12px; text-align: center;
+        }
+        .stat-box.a { border-top: 3px solid #6abf6a; }
+        .stat-box.b { border-top: 3px solid #5a8dee; }
+        .stat-box.c { border-top: 3px solid #e8a838; }
+        .stat-box.d { border-top: 3px solid #e06c75; }
+        .stat-count { font-size: 32px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+        .stat-box.a .stat-count { color: #6abf6a; } .stat-box.b .stat-count { color: #5a8dee; }
+        .stat-box.c .stat-count { color: #e8a838; } .stat-box.d .stat-count { color: #e06c75; }
+        .stat-dollars { font-size: 15px; font-weight: 600; color: #c0c0e0; margin-bottom: 6px; }
+        .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6868aa; }
+
+        .downloads h2, .section h2 { color: #8ab4f8; font-size: 18px; margin-bottom: 12px; }
+        .dl-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        @media (max-width: 760px) { .dl-list { grid-template-columns: 1fr; } }
+        .dl {
+            display: flex; justify-content: space-between; align-items: center; gap: 10px;
+            padding: 11px 14px; background: #0f3460; border: 1px solid #2a4a7a; border-radius: 8px;
+            color: #e0e0f0; text-decoration: none; font-size: 13px;
+        }
+        .dl:hover { border-color: #5a8dee; background: #1a4a7a; }
+        .dl .name { font-weight: 600; color: #8ab4f8; word-break: break-all; }
+        .dl .what { font-size: 12px; color: #8888aa; margin-top: 2px; }
+        .dl .size { font-size: 11px; color: #6a6a9a; white-space: nowrap; }
+        .dl.zip { grid-column: 1 / -1; border-color: #5a8dee; }
+
+        .note { font-size: 13px; color: #b0b0cc; line-height: 1.55; margin-bottom: 12px; }
+        .warn {
+            background: #3a3220; border: 1px solid #6a5a2a; color: #f0d090; padding: 12px 16px;
+            border-radius: 8px; font-size: 13px; line-height: 1.6; margin-bottom: 22px;
+        }
+        .ok-box {
+            background: #1a3a2a; border: 1px solid #2a6a3a; color: #8cd88c; padding: 14px 16px;
+            border-radius: 8px; font-size: 14px;
+        }
+
+        .section { margin-bottom: 22px; }
+        .section .count { font-size: 13px; color: #8888aa; font-weight: 500; margin-left: 6px; }
+        .table-wrap { background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; min-width: 640px; }
+        thead { background: #0f3460; }
+        th {
+            padding: 10px 12px; text-align: left; font-weight: 600; color: #8ab4f8; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
+        }
+        td { padding: 8px 12px; border-bottom: 1px solid #1e2e50; font-size: 13px; color: #c0c0e0; }
+        tr:hover td { background: #1a2e55; }
+        td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        td.mono { font-family: 'Courier New', monospace; font-weight: 600; color: #8ab4f8; white-space: nowrap; }
+        td.bad { color: #f08080; font-weight: 700; }
+        td.nowrap { white-space: nowrap; }
+        td.good { color: #8cd88c; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+        .pill.red { background: #4a1f28; color: #f0a0a0; } .pill.amber { background: #4a3a1a; color: #f0c060; }
+        .pill.blue { background: #1a2e55; color: #8ab4f8; } .pill.green { background: #1a3a2a; color: #8cd88c; }
+        details summary { cursor: pointer; color: #8ab4f8; font-size: 13px; margin: 8px 0; }
+
+        .footer { text-align: center; margin-top: 30px; color: #4a4a6a; font-size: 12px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>Core Credits Checker</h1>
+        <p>Full reconciliation — update the Core Returns master, build the credit request, check DealerCONNECT</p>
+    </div>
+
+    <nav class="tabs">
+        <a class="tab" href="/">Quick Check</a>
+        <a class="tab active" href="/reconcile">Full Reconciliation</a>
+    </nav>
+
+    <div class="error-msg" id="errorMessage"></div>
+
+    <div class="card" id="formCard">
+        <div class="upload-grid">
+            <div class="form-group">
+                <label class="title">1 · Master workbook</label>
+                <div class="drop-zone" id="masterZone">
+                    <div>Drop Core_Returns_RECONCILED.xlsx or click</div>
+                    <div class="hint">Leave empty to start a brand-new master</div>
+                    <input type="file" id="masterFile" accept=".xlsx,.xlsm">
+                </div>
+                <div class="file-list" id="masterList"></div>
+            </div>
+
+            <div class="form-group">
+                <label class="title">2 · Weekly credit memo PDFs</label>
+                <div class="drop-zone" id="memoZone">
+                    <div>Drop credit memo PDF(s) or click</div>
+                    <div class="hint">Mopar Weekly Global Core Return Credit Memo · several OK</div>
+                    <input type="file" id="memoFiles" accept=".pdf" multiple>
+                </div>
+                <div class="file-list" id="memoList"></div>
+            </div>
+
+            <div class="form-group">
+                <label class="title">3 · Signed GCRS shipper scans</label>
+                <div class="drop-zone" id="shipZone">
+                    <div>Drop shipper scan PDF(s) or click</div>
+                    <div class="hint">This week's new scans. To build the Credit Request PDF, also add the scans from about 60 days back.</div>
+                    <input type="file" id="shipFiles" accept=".pdf" multiple>
+                </div>
+                <div class="file-list" id="shipList"></div>
+            </div>
+
+            <div class="form-group">
+                <label class="title">4 · DealerCONNECT payment data <span class="opt">(optional)</span></label>
+                <div class="drop-zone" id="dcZone">
+                    <div>Drop Paid / UnPaid export (CSV or XLSX) or click</div>
+                    <div class="hint">Global Core Returns › Core Tracking/Inquiry › Payment Inquiry</div>
+                    <input type="file" id="dcFiles" accept=".csv,.txt,.xlsx,.xlsm,.xls" multiple>
+                </div>
+                <div class="file-list" id="dcList"></div>
+                <button class="paste-toggle" type="button" onclick="togglePaste()">…or paste rows copied from the screen</button>
+                <textarea id="dcText" placeholder="Tracking Number&#9;Part Number&#9;Warranty Claim&#9;Amount&#9;Received Date&#9;Payment Type&#9;Document"></textarea>
+            </div>
+        </div>
+
+        <div class="settings">
+            <div class="form-group">
+                <label class="title">As of date</label>
+                <input type="date" id="asof">
+            </div>
+            <div class="form-group">
+                <label class="title">Request credit at (days unpaid)</label>
+                <input type="number" id="threshold" value="60" min="1" max="365">
+            </div>
+            <div class="form-group">
+                <label class="title">Dealer code</label>
+                <input type="text" id="dealer" placeholder="Read from your documents" maxlength="8" inputmode="numeric">
+            </div>
+        </div>
+
+        <div class="checks">
+            <label><input type="checkbox" id="markRequested" checked> Write today's date in "Credit Requested" for every ticket on the credit request (so next week's request doesn't repeat them)</label>
+            <label><input type="checkbox" id="applyDc" checked> Let DealerCONNECT correct part #, amount and claim on unpaid tickets, and mark tickets it shows paid</label>
+            <label><input type="checkbox" id="includePrev"> Put tickets already requested before back on this credit request</label>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn-primary" id="runBtn" onclick="startRun()">Run Reconciliation</button>
+        </div>
+    </div>
+
+    <div class="card progress" id="progress">
+        <div class="spinner"></div>
+        <div class="msg" id="progMsg">Uploading…</div>
+        <div class="sub" id="progSub">Shipper scans are read page by page (OCR) — usually 1–3 seconds a page.</div>
+        <ul id="progLog"></ul>
+    </div>
+
+    <div class="results" id="results"></div>
+
+    <div class="footer">
+        Uploaded files are deleted as soon as the run finishes. Result files are deleted from the server after 2 hours — download what you need.<br>
+        Core Credits Checker — built for CDJR parts operations
+    </div>
+</div>
+
+<script>
+    // ── upload zones ──
+    function wireZone(zoneId, inputId, listId) {
+        const zone = document.getElementById(zoneId);
+        const input = document.getElementById(inputId);
+        const list = document.getElementById(listId);
+        zone.addEventListener('click', () => input.click());
+        input.addEventListener('change', () => showFiles(input, list));
+        ['dragenter', 'dragover'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('dragover'); }));
+        ['dragleave', 'drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('dragover'); }));
+        zone.addEventListener('drop', ev => {
+            ev.preventDefault();
+            input.files = ev.dataTransfer.files;
+            showFiles(input, list);
+        });
+    }
+    function showFiles(input, list) {
+        list.innerHTML = Array.from(input.files).map(f => '<span>✓ ' + esc(f.name) + '</span>').join('');
+    }
+    wireZone('masterZone', 'masterFile', 'masterList');
+    wireZone('memoZone', 'memoFiles', 'memoList');
+    wireZone('shipZone', 'shipFiles', 'shipList');
+    wireZone('dcZone', 'dcFiles', 'dcList');
+
+    function togglePaste() {
+        const t = document.getElementById('dcText');
+        t.style.display = t.style.display === 'block' ? 'none' : 'block';
+    }
+
+    (function setToday() {
+        const d = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        document.getElementById('asof').value = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    })();
+
+    // ── run ──
+    let pollTimer = null;
+
+    async function startRun() {
+        const err = document.getElementById('errorMessage');
+        err.classList.remove('show');
+        const fd = new FormData();
+        const m = document.getElementById('masterFile').files;
+        if (m.length) fd.append('master', m[0]);
+        for (const f of document.getElementById('memoFiles').files) fd.append('memos', f);
+        for (const f of document.getElementById('shipFiles').files) fd.append('shippers', f);
+        for (const f of document.getElementById('dcFiles').files) fd.append('dc', f);
+        const dcText = document.getElementById('dcText').value;
+        if (dcText.trim()) fd.append('dc_text', dcText);
+        let count = 0;
+        for (const _ of fd.keys()) count++;
+        if (!count) { showError('Add at least one file: the master workbook, a credit memo, a shipper scan or DealerCONNECT data.'); return; }
+        fd.append('asof', document.getElementById('asof').value);
+        fd.append('threshold', document.getElementById('threshold').value);
+        fd.append('dealer', document.getElementById('dealer').value);
+        fd.append('mark_requested', document.getElementById('markRequested').checked ? '1' : '0');
+        fd.append('apply_dc', document.getElementById('applyDc').checked ? '1' : '0');
+        fd.append('include_prev', document.getElementById('includePrev').checked ? '1' : '0');
+
+        document.getElementById('runBtn').disabled = true;
+        document.getElementById('results').style.display = 'none';
+        showProgress('Uploading files…', []);
+        try {
+            const resp = await fetch('/api/reconcile', { method: 'POST', body: fd });
+            const data = await readJson(resp);
+            if (!resp.ok) throw new Error(data.error || ('Server error ' + resp.status));
+            location.hash = 'job=' + data.job_id;
+            poll(data.job_id);
+        } catch (e) {
+            hideProgress();
+            showError(e.message);
+            document.getElementById('runBtn').disabled = false;
+        }
+    }
+
+    async function readJson(resp) {
+        const raw = await resp.text();
+        try { return JSON.parse(raw); }
+        catch (e) { throw new Error('The server did not answer normally (HTTP ' + resp.status + '). If the app was asleep, wait a minute and try again.'); }
+    }
+
+    function poll(jobId) {
+        clearTimeout(pollTimer);
+        fetch('/api/jobs/' + jobId).then(readJsonSafe).then(job => {
+            if (job.status === 'done') {
+                hideProgress();
+                renderResults(jobId, job.result);
+                document.getElementById('runBtn').disabled = false;
+                return;
+            }
+            if (job.status === 'error' || job.error) {
+                hideProgress();
+                showError(job.error || 'The run stopped.');
+                document.getElementById('runBtn').disabled = false;
+                return;
+            }
+            const sub = job.status === 'queued' && job.ahead ? ('Waiting for ' + job.ahead + ' other run(s) to finish…') :
+                ('Running for ' + Math.round(job.elapsed || 0) + ' s');
+            showProgress(job.message || 'Working…', (job.log || []).slice(-6), sub);
+            pollTimer = setTimeout(() => poll(jobId), 1500);
+        }).catch(e => {
+            if (e.fatal) {
+                hideProgress();
+                history.replaceState(null, '', location.pathname);
+                showError(e.message);
+                document.getElementById('runBtn').disabled = false;
+                return;
+            }
+            showProgress('Reconnecting…', [], e.message);
+            pollTimer = setTimeout(() => poll(jobId), 3000);
+        });
+    }
+    async function readJsonSafe(resp) {
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 404) { throw Object.assign(new Error(data.error || 'Run not found'), { fatal: true }); }
+        return data;
+    }
+
+    function showProgress(msg, log, sub) {
+        document.getElementById('formCard').style.display = 'none';
+        const p = document.getElementById('progress');
+        p.style.display = 'block';
+        document.getElementById('progMsg').textContent = msg;
+        if (sub) document.getElementById('progSub').textContent = sub;
+        document.getElementById('progLog').innerHTML = (log || []).map(l => '<li>' + esc(l) + '</li>').join('');
+    }
+    function hideProgress() { document.getElementById('progress').style.display = 'none'; }
+    function showError(msg) {
+        const e = document.getElementById('errorMessage');
+        e.textContent = msg;
+        e.classList.add('show');
+        document.getElementById('formCard').style.display = 'block';
+    }
+
+    // ── results ──
+    function money(n) {
+        if (n === null || n === undefined || n === '') return '';
+        return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function sum(list, key) { return (list || []).reduce((a, x) => a + (Number(x[key]) || 0), 0); }
+    function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+
+    function table(headers, rows) {
+        let h = '<div class="table-wrap"><table><thead><tr>' + headers.map(x => '<th>' + esc(x[0]) + '</th>').join('') + '</tr></thead><tbody>';
+        rows.forEach(r => {
+            h += '<tr>' + r.map((v, i) => {
+                const cls = headers[i][1] || '';
+                if (v && typeof v === 'object' && v.html !== undefined) return '<td class="' + cls + '">' + v.html + '</td>';
+                return '<td class="' + cls + '">' + esc(v === null || v === undefined ? '' : v) + '</td>';
+            }).join('') + '</tr>';
+        });
+        return h + '</tbody></table></div>';
+    }
+    function section(title, count, body, note) {
+        return '<div class="section"><h2>' + esc(title) + (count !== null ? '<span class="count">' + count + '</span>' : '') + '</h2>' +
+            (note ? '<p class="note">' + note + '</p>' : '') + body + '</div>';
+    }
+    function limited(rows, n) { return rows.length > n ? rows.slice(0, n) : rows; }
+
+    function renderResults(jobId, r) {
+        const box = document.getElementById('results');
+        const credited = sum(r.matched, 'credited');
+        const newAmt = sum(r.new_shipments, 'amount');
+        const unpaidAmt = sum(r.unpaid, 'amount');
+        const reqAmt = sum(r.credit_request, 'amount');
+        let h = '<div class="stats-row">' +
+            stat('a', r.matched.length, money(credited), 'Credits applied') +
+            stat('b', r.new_shipments.length, money(newAmt), 'New shipments added') +
+            stat('c', r.unpaid.length, money(unpaidAmt), 'Still unpaid') +
+            stat('d', r.credit_request.length, money(reqAmt), 'Credit request (' + r.threshold + '+ days)') +
+            '</div>';
+
+        // downloads
+        h += '<div class="card downloads"><h2>Download</h2><div class="dl-list">';
+        (r.files || []).forEach(f => {
+            h += '<a class="dl' + (f.kind === 'zip' ? ' zip' : '') + '" href="/api/jobs/' + jobId + '/files/' + encodeURIComponent(f.name) + '">' +
+                '<div><div class="name">' + esc(f.name) + '</div><div class="what">' + esc(f.label) + '</div></div>' +
+                '<div class="size">' + fmtSize(f.size) + ' ⬇</div></a>';
+        });
+        h += '</div><p class="note" style="margin-top:12px;margin-bottom:0;">As of ' + esc(r.asof) +
+            (r.dealer ? ' · Dealer ' + esc(r.dealer) : '') + ' · ' + (r.inputs.master_rows || 0) + ' rows in the master you uploaded' +
+            (r.pages_scanned ? ' · ' + r.pages_scanned + ' shipper pages read' : '') + '</p></div>';
+
+        if (r.warnings && r.warnings.length) {
+            h += '<div class="warn"><strong>Check these:</strong><br>' + r.warnings.map(esc).join('<br>') + '</div>';
+        }
+
+        // credit request
+        if (r.credit_request.length) {
+            const rows = r.credit_request.map(x => [x.date, x.ticket, x.part, money(x.amount), x.age,
+                x.previously_requested || '', { html: x.page_found ? '<span class="pill green">Found</span>' : '<span class="pill red">Missing</span>' }]);
+            h += section('Credit request — unpaid ' + r.threshold + '+ days', r.credit_request.length,
+                table([['Shipper date'], ['Control ticket', 'mono'], ['Part #'], ['Amount', 'num'], ['Age', 'num'], ['Requested before'], ['Signed page']], rows),
+                'These go on Credit_Request.xlsx (Dealer Code · GCRS Shipper Date · Ticket). Credit_Request.pdf has each signed shipper page with "UnPaid" marked next to these tickets.');
+        } else {
+            h += section('Credit request', 0, '<div class="ok-box">No unpaid tickets are ' + r.threshold + '+ days old (or they were all requested before).</div>');
+        }
+        if (r.rescan && r.rescan.length) {
+            h += section('Shippers to re-scan', r.rescan.reduce((a, g) => a + g.tickets.length, 0),
+                table([['GCRS shipper date'], ['Control tickets', 'mono']], r.rescan.map(g => [g.date, g.tickets.join(', ')])),
+                esc(r.rescan_note || ''));
+        }
+        if (r.prev_requested && r.prev_requested.length) {
+            h += section('Requested before — still unpaid', r.prev_requested.length,
+                table([['Shipment ID'], ['Control ticket', 'mono'], ['Part #'], ['Amount', 'num'], ['Age', 'num'], ['Requested']],
+                    r.prev_requested.map(x => [x.shipment, x.ticket, x.part, money(x.amount), x.age, x.requested])),
+                'Not repeated on this request. Follow up with your Mopar rep, or tick "Put tickets already requested before back on this credit request" and run again.');
+        }
+        if (r.partial.length) {
+            h += section('Partial / over credits', r.partial.length,
+                table([['Memo'], ['Control ticket', 'mono'], ['Shipment ID'], ['Expected', 'num'], ['Credited', 'num'], ['Difference', 'num']],
+                    r.partial.map(x => [x.memo, x.ticket, x.shipment, money(x.expected), money(x.credited), money(x.diff)])),
+                'Credited amount differs from what the master expected. The master now shows the credited amount.');
+        }
+        if (r.unmatched_credits.length) {
+            h += section('Credits for tickets not on the master', r.unmatched_credits.length,
+                table([['Memo'], ['Control ticket', 'mono'], ['Part #'], ['Claim'], ['Amount', 'num']],
+                    r.unmatched_credits.map(x => [x.memo, x.ticket, x.part, x.claim, money(x.amount)])),
+                'Added to the master as paid lines (no Shipment ID yet — it fills in when the shipper page is scanned).');
+        }
+        if (r.new_shipments.length) {
+            h += section('New shipments added from scans', r.new_shipments.length,
+                table([['Shipment ID', 'nowrap'], ['Control ticket', 'mono'], ['Part #'], ['Claim'], ['Amount', 'num'], ['Data from'], ['Check']],
+                    limited(r.new_shipments, 300).map(x => [x.shipment, x.ticket, x.part, x.claim, money(x.amount), x.source, x.flags])),
+                'Part # and amount come from your DealerCONNECT upload when it has the ticket, otherwise from the scan. The credit memo corrects them again when the credit posts.');
+        }
+        if (r.ocr_review && r.ocr_review.length) {
+            h += section('Scan review', r.ocr_review.length,
+                table([['Scan file'], ['Page', 'num'], ['Ticket', 'mono'], ['Issue']],
+                    r.ocr_review.map(x => [x.file, x.page, x.ticket, x.issue])));
+        }
+        if (r.comparison_summary && r.comparison_summary.length) {
+            h += section('Master vs. DealerCONNECT', null,
+                table([['Status'], ['What it means'], ['Tickets', 'num'], ['Amount', 'num'], ['Action']],
+                    r.comparison_summary.map(s => [{ html: statusPill(s.status) }, s.meaning, s.count, money(s.amount), s.action])),
+                'Full list is in the Unpaid_Comparison workbook.' +
+                (r.dc_pull ? ' DealerCONNECT data pulled ' + esc(r.dc_pull) + ' (from the file name).' : '') +
+                (r.dc_after_pull ? ' ' + r.dc_after_pull + ' unpaid tickets shipped on or after that date were left out — they can\'t be on it yet.' : '') +
+                (r.dc_paid_not_on_master ? ' ' + r.dc_paid_not_on_master + ' paid DealerCONNECT lines are not on the master (not added).' : ''));
+        }
+        if (r.data_fixes && r.data_fixes.length) {
+            h += section('Data corrections', r.data_fixes.length,
+                '<details><summary>Show changes</summary>' + table([['Control ticket', 'mono'], ['Field'], ['Was'], ['Now'], ['Source']],
+                    r.data_fixes.map(x => [x.ticket, x.field, x.old, x.new, x.source])) + '</details>');
+        }
+        if (r.aging && r.aging.length) {
+            h += section('Unpaid aging', null,
+                table([['Age'], ['Tickets', 'num'], ['Amount', 'num']], r.aging.map(a => [a.bucket, a.count, money(a.amount)])));
+        }
+        if (r.memo_totals && r.memo_totals.length) {
+            h += section('Credit memo check', null,
+                table([['Memo'], ['Date'], ['Lines total', 'num'], ['Memo net', 'num'], ['Result']],
+                    r.memo_totals.map(m => [m.memo, m.date, money(m.lines_total), money(m.net_total),
+                        { html: m.ties ? '<span class="pill green">Ties</span>' : '<span class="pill red">Does not tie</span>' }])),
+                'Every credit line read from the memo is added up and checked against the memo\'s NET CREDIT AMOUNT.');
+        }
+        h += '<div class="btn-row"><button class="btn-secondary" onclick="newRun()">Start another run</button></div>';
+        box.innerHTML = h;
+        box.style.display = 'block';
+        box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function stat(cls, n, amt, label) {
+        return '<div class="stat-box ' + cls + '"><div class="stat-count">' + n + '</div><div class="stat-dollars">' + amt +
+            '</div><div class="stat-label">' + esc(label) + '</div></div>';
+    }
+    function statusPill(s) {
+        const c = { 'MOPAR HAS NO RECORD': 'red', 'NOT ON MOPAR UNPAID LIST': 'amber', 'ADD TO MASTER': 'amber',
+            'CHECK - CREDITED ON MASTER': 'red', 'FIX DATA': 'blue', 'FIXED FROM DEALERCONNECT': 'blue', 'PAID PER MOPAR': 'green', 'AGREE': 'green' }[s] || 'blue';
+        return '<span class="pill ' + c + '">' + esc(s) + '</span>';
+    }
+    function newRun() {
+        history.replaceState(null, '', location.pathname);
+        document.getElementById('results').style.display = 'none';
+        document.getElementById('formCard').style.display = 'block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function esc(t) { const d = document.createElement('div'); d.textContent = String(t === null || t === undefined ? '' : t); return d.innerHTML; }
+
+    // resume a run after a page refresh (#job=<id>)
+    (function resume() {
+        const m = location.hash.match(/job=([0-9a-f]{32})/);
+        if (!m) return;
+        document.getElementById('runBtn').disabled = true;
+        showProgress('Checking on your run…', []);
+        fetch('/api/jobs/' + m[1]).then(r => {
+            if (r.status === 404) { hideProgress(); document.getElementById('formCard').style.display = 'block'; document.getElementById('runBtn').disabled = false; history.replaceState(null, '', location.pathname); return; }
+            poll(m[1]);
+        });
+    })();
+</script>
+</body>
+</html>
