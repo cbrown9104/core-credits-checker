@@ -45,17 +45,25 @@
         .form-group label.title .opt { color: #6a6a9a; text-transform: none; font-weight: 500; letter-spacing: 0; }
 
         .drop-zone {
-            padding: 20px 14px; background: #0f3460; border: 2px dashed #3a3a6a;
+            padding: 18px 16px; background: #0f3460; border: 2px dashed #3a3a6a;
             border-radius: 8px; cursor: pointer; text-align: center; color: #7878aa;
-            font-weight: 500; font-size: 14px; transition: all 0.2s ease; min-height: 92px;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            font-weight: 500; font-size: 13px; transition: all 0.2s ease; min-height: 124px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
         }
-        .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; color: #8ab4f8; }
+        .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; }
+        .drop-zone:hover .act, .drop-zone.dragover .act { color: #8ab4f8; }
         .drop-zone input[type="file"] { display: none; }
-        .hint { font-size: 11px; margin-top: 5px; color: #5a5a8a; line-height: 1.45; }
+        .drop-zone .doc { font-size: 15px; font-weight: 600; color: #d0d8f0; }
+        .drop-zone .act { font-size: 13px; color: #7f8fc0; }
+        .drop-zone .hint { font-size: 11px; margin-top: 4px; color: #6a6a9a; line-height: 1.45; max-width: 420px; }
 
         .file-list { margin-top: 8px; font-size: 12px; color: #6abf6a; }
-        .file-list span { display: block; padding: 2px 0; word-break: break-all; }
+        .file-list span { display: flex; align-items: center; gap: 6px; padding: 2px 0; word-break: break-all; }
+        .file-list .rm {
+            background: none; border: none; color: #6a6a9a; cursor: pointer; font-size: 12px;
+            padding: 0 4px; line-height: 1; margin-left: auto;
+        }
+        .file-list .rm:hover { color: #f08080; }
 
         .paste-toggle {
             margin-top: 8px; background: none; border: none; color: #8ab4f8;
@@ -118,17 +126,52 @@
         @media (max-width: 760px) { .stats-row { grid-template-columns: 1fr 1fr; } }
         .stat-box {
             background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px;
-            padding: 18px 12px; text-align: center;
+            padding: 18px 12px 12px; text-align: center; cursor: pointer; width: 100%;
+            font: inherit; color: inherit; transition: border-color .15s, background .15s;
         }
+        .stat-box:hover { background: #1a2748; border-color: #4a4a7a; }
+        .stat-box:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
         .stat-box.a { border-top: 3px solid #6abf6a; }
         .stat-box.b { border-top: 3px solid #5a8dee; }
         .stat-box.c { border-top: 3px solid #e8a838; }
         .stat-box.d { border-top: 3px solid #e06c75; }
+        .stat-box.active.a { box-shadow: 0 0 0 2px #6abf6a; }
+        .stat-box.active.b { box-shadow: 0 0 0 2px #5a8dee; }
+        .stat-box.active.c { box-shadow: 0 0 0 2px #e8a838; }
+        .stat-box.active.d { box-shadow: 0 0 0 2px #e06c75; }
         .stat-count { font-size: 32px; font-weight: 700; line-height: 1; margin-bottom: 4px; }
         .stat-box.a .stat-count { color: #6abf6a; } .stat-box.b .stat-count { color: #5a8dee; }
         .stat-box.c .stat-count { color: #e8a838; } .stat-box.d .stat-count { color: #e06c75; }
         .stat-dollars { font-size: 15px; font-weight: 600; color: #c0c0e0; margin-bottom: 6px; }
         .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6868aa; }
+        .stat-hint { font-size: 11px; color: #5a5a8a; margin-top: 8px; }
+        .stat-box.active .stat-hint, .stat-box:hover .stat-hint { color: #8ab4f8; }
+
+        /* detail drawer under the stat cards */
+        .stat-detail {
+            background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px;
+            padding: 16px 18px; margin: -8px 0 22px;
+        }
+        .stat-detail[hidden] { display: none; }
+        .stat-detail.a { border-color: #6abf6a; } .stat-detail.b { border-color: #5a8dee; }
+        .stat-detail.c { border-color: #e8a838; } .stat-detail.d { border-color: #e06c75; }
+        .detail-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+        .detail-head h2 { color: #8ab4f8; font-size: 17px; margin: 0; }
+        .detail-head .count { font-size: 13px; color: #8888aa; }
+        .detail-filter {
+            margin-left: auto; width: 240px; max-width: 100%; padding: 7px 10px; border-radius: 6px;
+            border: 1px solid #2a2a4a; background: #0f1a30; color: #e0e0f0; font-size: 13px;
+        }
+        .detail-filter:focus { outline: none; border-color: #5a8dee; }
+        .detail-close {
+            background: none; border: 1px solid #2a2a4a; color: #8888aa; border-radius: 6px;
+            padding: 6px 10px; cursor: pointer; font-size: 13px;
+        }
+        .detail-close:hover { color: #e0e0f0; border-color: #5a8dee; }
+        .stat-detail .note { margin-bottom: 10px; }
+        .stat-detail .table-wrap { max-height: 480px; overflow: auto; }
+        .stat-detail thead th { position: sticky; top: 0; background: #0f3460; }
+        .detail-foot { font-size: 12px; color: #6a6a9a; margin-top: 8px; }
 
         .downloads h2, .section h2 { color: #8ab4f8; font-size: 18px; margin-bottom: 12px; }
         .dl-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -197,8 +240,9 @@
             <div class="form-group">
                 <label class="title">1 · Master workbook</label>
                 <div class="drop-zone" id="masterZone">
-                    <div>Drop Core_Returns_RECONCILED.xlsx or click</div>
-                    <div class="hint">Leave empty to start a brand-new master</div>
+                    <div class="doc">Core_Returns_RECONCILED.xlsx</div>
+                    <div class="act">Drop the workbook or click</div>
+                    <div class="hint">Last week's master. Leave empty to start a brand-new one.</div>
                     <input type="file" id="masterFile" accept=".xlsx,.xlsm">
                 </div>
                 <div class="file-list" id="masterList"></div>
@@ -207,8 +251,9 @@
             <div class="form-group">
                 <label class="title">2 · Weekly credit memo PDFs</label>
                 <div class="drop-zone" id="memoZone">
-                    <div>Drop credit memo PDF(s) or click</div>
-                    <div class="hint">Mopar Weekly Global Core Return Credit Memo · several OK</div>
+                    <div class="doc">Mopar Weekly Global Core Return Credit Memo</div>
+                    <div class="act">Drop credit memo PDF(s) or click</div>
+                    <div class="hint">This week's memo. Several memos at once are fine.</div>
                     <input type="file" id="memoFiles" accept=".pdf" multiple>
                 </div>
                 <div class="file-list" id="memoList"></div>
@@ -217,7 +262,8 @@
             <div class="form-group">
                 <label class="title">3 · Signed GCRS shipper scans</label>
                 <div class="drop-zone" id="shipZone">
-                    <div>Drop shipper scan PDF(s) or click</div>
+                    <div class="doc">GCRS Dealer Shipper Document</div>
+                    <div class="act">Drop shipper scan PDF(s) or click</div>
                     <div class="hint">This week's new scans. To build the Credit Request PDF, also add the scans from about 60 days back.</div>
                     <input type="file" id="shipFiles" accept=".pdf" multiple>
                 </div>
@@ -227,7 +273,8 @@
             <div class="form-group">
                 <label class="title">4 · DealerCONNECT payment data <span class="opt">(optional)</span></label>
                 <div class="drop-zone" id="dcZone">
-                    <div>Drop Paid / UnPaid export (CSV or XLSX) or click</div>
+                    <div class="doc">DealerCONNECT Payment Inquiry export</div>
+                    <div class="act">Drop the Paid / UnPaid export (CSV or XLSX) or click</div>
                     <div class="hint">Global Core Returns › Core Tracking/Inquiry › Payment Inquiry</div>
                     <input type="file" id="dcFiles" accept=".csv,.txt,.xlsx,.xlsm,.xls" multiple>
                 </div>
@@ -280,22 +327,38 @@
 
 <script>
     // ── upload zones ──
+    // Files dropped or picked in separate batches add up (a multi-file box
+    // keeps what it already has); the ✕ next to a file removes it.
     function wireZone(zoneId, inputId, listId) {
         const zone = document.getElementById(zoneId);
         const input = document.getElementById(inputId);
         const list = document.getElementById(listId);
+        let files = [];
+        function sync() {
+            const dt = new DataTransfer();
+            files.forEach(f => dt.items.add(f));
+            input.files = dt.files;
+            list.innerHTML = files.map((f, i) => '<span>✓ ' + esc(f.name) +
+                '<button type="button" class="rm" data-i="' + i + '" aria-label="Remove ' + esc(f.name) + '" title="Remove">✕</button></span>').join('');
+        }
+        function add(incoming) {
+            const picked = Array.from(incoming || []);
+            if (!picked.length) return;
+            if (!input.multiple) files = picked.slice(0, 1);
+            else picked.forEach(f => { if (!files.some(g => g.name === f.name && g.size === f.size)) files.push(f); });
+            sync();
+        }
         zone.addEventListener('click', () => input.click());
-        input.addEventListener('change', () => showFiles(input, list));
+        input.addEventListener('change', () => add(input.files));
         ['dragenter', 'dragover'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('dragover'); }));
         ['dragleave', 'drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('dragover'); }));
-        zone.addEventListener('drop', ev => {
-            ev.preventDefault();
-            input.files = ev.dataTransfer.files;
-            showFiles(input, list);
+        zone.addEventListener('drop', ev => { ev.preventDefault(); add(ev.dataTransfer.files); });
+        list.addEventListener('click', ev => {
+            const b = ev.target.closest('.rm');
+            if (!b) return;
+            files.splice(Number(b.dataset.i), 1);
+            sync();
         });
-    }
-    function showFiles(input, list) {
-        list.innerHTML = Array.from(input.files).map(f => '<span>✓ ' + esc(f.name) + '</span>').join('');
     }
     wireZone('masterZone', 'masterFile', 'masterList');
     wireZone('memoZone', 'memoFiles', 'memoList');
@@ -443,12 +506,13 @@
         const newAmt = sum(r.new_shipments, 'amount');
         const unpaidAmt = sum(r.unpaid, 'amount');
         const reqAmt = sum(r.credit_request, 'amount');
+        lastResult = r;
         let h = '<div class="stats-row">' +
-            stat('a', r.matched.length, money(credited), 'Credits applied') +
-            stat('b', r.new_shipments.length, money(newAmt), 'New shipments added') +
-            stat('c', r.unpaid.length, money(unpaidAmt), 'Still unpaid') +
-            stat('d', r.credit_request.length, money(reqAmt), 'Credit request (' + r.threshold + '+ days)') +
-            '</div>';
+            stat('a', 'matched', r.matched.length, money(credited), 'Credits applied') +
+            stat('b', 'new_shipments', r.new_shipments.length, money(newAmt), 'New shipments added') +
+            stat('c', 'unpaid', r.unpaid.length, money(unpaidAmt), 'Still unpaid') +
+            stat('d', 'credit_request', r.credit_request.length, money(reqAmt), 'Credit request (' + r.threshold + '+ days)') +
+            '</div><div id="statDetail" class="stat-detail" hidden></div>';
 
         // downloads
         h += '<div class="card downloads"><h2>Download</h2><div class="dl-list">';
@@ -539,10 +603,95 @@
         box.style.display = 'block';
         box.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    function stat(cls, n, amt, label) {
-        return '<div class="stat-box ' + cls + '"><div class="stat-count">' + n + '</div><div class="stat-dollars">' + amt +
-            '</div><div class="stat-label">' + esc(label) + '</div></div>';
+    function stat(cls, key, n, amt, label) {
+        return '<button type="button" class="stat-box ' + cls + '" data-key="' + key + '" data-cls="' + cls +
+            '" aria-expanded="false" aria-controls="statDetail"><div class="stat-count">' + n + '</div><div class="stat-dollars">' + amt +
+            '</div><div class="stat-label">' + esc(label) + '</div><div class="stat-hint">Click to view ▾</div></button>';
     }
+
+    // ── stat card drawer ──
+    let lastResult = null;
+    let openStat = null;
+    const DETAILS = {
+        matched: {
+            title: 'Credits applied',
+            note: 'Credit memo lines from this run that matched a control ticket on your master. The master now shows these as paid.',
+            headers: [['Memo'], ['Memo date'], ['Shipment ID', 'nowrap'], ['Control ticket', 'mono'], ['Part #'], ['Claim'], ['Expected', 'num'], ['Credited', 'num']],
+            rows: r => r.matched.slice().sort((a, b) => String(a.shipment || '').localeCompare(String(b.shipment || '')) || String(a.ticket).localeCompare(String(b.ticket)))
+                .map(x => [x.memo, x.memo_date, x.shipment, x.ticket, x.part, x.claim, money(x.expected), money(x.credited)]),
+            empty: 'No credits were applied on this run. Add this week\'s Global Core Return Credit Memo PDF to apply credits.'
+        },
+        new_shipments: {
+            title: 'New shipments added',
+            note: 'Tickets read from the shipper scans that were not on the master yet. Part # and amount come from DealerCONNECT when it has the ticket, otherwise from the scan.',
+            headers: [['Shipment ID', 'nowrap'], ['Control ticket', 'mono'], ['Part #'], ['Claim'], ['Amount', 'num'], ['Data from'], ['Scan page'], ['Check']],
+            rows: r => r.new_shipments.map(x => [x.shipment, x.ticket, x.part, x.claim, money(x.amount), x.source, (x.file ? x.file + ' p.' + x.page : ''), x.flags]),
+            empty: 'No new shipments. Every ticket on the scans was already on the master.'
+        },
+        unpaid: {
+            title: 'Still unpaid',
+            note: 'Every ticket on the master with no credit yet, oldest shipment first. Same list as the Unpaid Cores tab of the master.',
+            headers: [['Shipment ID', 'nowrap'], ['Control ticket', 'mono'], ['Part #'], ['Claim'], ['Amount', 'num'], ['Age', 'num'], ['Credit requested']],
+            rows: r => r.unpaid.map(x => [x.shipment, x.ticket, x.part, x.claim, money(x.amount), x.age, x.requested]),
+            empty: 'Nothing is unpaid. Every ticket on the master has a credit.'
+        },
+        credit_request: {
+            title: 'Credit request',
+            note: 'Unpaid tickets old enough to ask Mopar for a manual credit. These are the rows in Credit_Request.xlsx, and Credit_Request.pdf has each signed shipper page with "UnPaid" marked next to them.',
+            headers: [['Shipper date'], ['Control ticket', 'mono'], ['Part #'], ['Amount', 'num'], ['Age', 'num'], ['Requested before'], ['Signed page']],
+            rows: r => r.credit_request.map(x => [x.date, x.ticket, x.part, money(x.amount), x.age, x.previously_requested || '',
+                { html: x.page_found ? '<span class="pill green">Found</span>' : '<span class="pill red">Missing</span>' }]),
+            empty: 'No unpaid tickets are old enough for a credit request (or they were all requested before).'
+        }
+    };
+    const DETAIL_MAX = 1000;
+    function toggleStat(btn) {
+        const key = btn.dataset.key;
+        const panel = document.getElementById('statDetail');
+        if (!panel || !lastResult) return;
+        document.querySelectorAll('.stat-box').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-expanded', 'false'); });
+        if (openStat === key) { openStat = null; panel.hidden = true; panel.innerHTML = ''; panel.className = 'stat-detail'; return; }
+        openStat = key;
+        btn.classList.add('active');
+        btn.setAttribute('aria-expanded', 'true');
+        const d = DETAILS[key];
+        const all = d.rows(lastResult);
+        const rows = all.slice(0, DETAIL_MAX);
+        const total = (lastResult[key] || []).reduce((a, x) => a + (Number(key === 'matched' ? x.credited : x.amount) || 0), 0);
+        let h = '<div class="detail-head"><h2>' + esc(d.title) + '</h2><span class="count">' + all.length + (all.length === 1 ? ' ticket' : ' tickets') +
+            (all.length ? ' · ' + money(total) : '') + '</span>' +
+            (all.length > 8 ? '<input class="detail-filter" type="search" placeholder="Filter by ticket, part, memo…" aria-label="Filter rows" oninput="filterDetail(this.value)">' : '') +
+            '<button type="button" class="detail-close" onclick="closeStat()">Close ✕</button></div>';
+        h += '<p class="note">' + esc(d.note) + '</p>';
+        h += all.length ? table(d.headers, rows) : '<div class="ok-box">' + esc(d.empty) + '</div>';
+        if (all.length > DETAIL_MAX) h += '<div class="detail-foot">Showing the first ' + DETAIL_MAX + ' of ' + all.length + '. The full list is in the Core_Recon_Report workbook.</div>';
+        else if (all.length) h += '<div class="detail-foot" id="detailFoot"></div>';
+        panel.className = 'stat-detail ' + btn.dataset.cls;
+        panel.innerHTML = h;
+        panel.hidden = false;
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    function closeStat() {
+        const b = document.querySelector('.stat-box.active');
+        if (b) toggleStat(b);
+    }
+    function filterDetail(q) {
+        q = (q || '').trim().toLowerCase();
+        const panel = document.getElementById('statDetail');
+        let shown = 0, total = 0;
+        panel.querySelectorAll('tbody tr').forEach(tr => {
+            total++;
+            const hit = !q || tr.textContent.toLowerCase().indexOf(q) !== -1;
+            tr.style.display = hit ? '' : 'none';
+            if (hit) shown++;
+        });
+        const foot = document.getElementById('detailFoot');
+        if (foot) foot.textContent = q ? ('Showing ' + shown + ' of ' + total) : '';
+    }
+    document.getElementById('results').addEventListener('click', e => {
+        const b = e.target.closest('.stat-box');
+        if (b) toggleStat(b);
+    });
     function statusPill(s) {
         const c = { 'MOPAR HAS NO RECORD': 'red', 'NOT ON MOPAR UNPAID LIST': 'amber', 'ADD TO MASTER': 'amber',
             'CHECK - CREDITED ON MASTER': 'red', 'FIX DATA': 'blue', 'FIXED FROM DEALERCONNECT': 'blue', 'PAID PER MOPAR': 'green', 'AGREE': 'green' }[s] || 'blue';
