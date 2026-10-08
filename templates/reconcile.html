@@ -45,17 +45,25 @@
         .form-group label.title .opt { color: #6a6a9a; text-transform: none; font-weight: 500; letter-spacing: 0; }
 
         .drop-zone {
-            padding: 20px 14px; background: #0f3460; border: 2px dashed #3a3a6a;
+            padding: 18px 16px; background: #0f3460; border: 2px dashed #3a3a6a;
             border-radius: 8px; cursor: pointer; text-align: center; color: #7878aa;
-            font-weight: 500; font-size: 14px; transition: all 0.2s ease; min-height: 92px;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            font-weight: 500; font-size: 13px; transition: all 0.2s ease; min-height: 124px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
         }
-        .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; color: #8ab4f8; }
+        .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; }
+        .drop-zone:hover .act, .drop-zone.dragover .act { color: #8ab4f8; }
         .drop-zone input[type="file"] { display: none; }
-        .hint { font-size: 11px; margin-top: 5px; color: #5a5a8a; line-height: 1.45; }
+        .drop-zone .doc { font-size: 15px; font-weight: 600; color: #d0d8f0; }
+        .drop-zone .act { font-size: 13px; color: #7f8fc0; }
+        .drop-zone .hint { font-size: 11px; margin-top: 4px; color: #6a6a9a; line-height: 1.45; max-width: 420px; }
 
         .file-list { margin-top: 8px; font-size: 12px; color: #6abf6a; }
-        .file-list span { display: block; padding: 2px 0; word-break: break-all; }
+        .file-list span { display: flex; align-items: center; gap: 6px; padding: 2px 0; word-break: break-all; }
+        .file-list .rm {
+            background: none; border: none; color: #6a6a9a; cursor: pointer; font-size: 12px;
+            padding: 0 4px; line-height: 1; margin-left: auto;
+        }
+        .file-list .rm:hover { color: #f08080; }
 
         .paste-toggle {
             margin-top: 8px; background: none; border: none; color: #8ab4f8;
@@ -232,8 +240,9 @@
             <div class="form-group">
                 <label class="title">1 · Master workbook</label>
                 <div class="drop-zone" id="masterZone">
-                    <div>Drop Core_Returns_RECONCILED.xlsx or click</div>
-                    <div class="hint">Leave empty to start a brand-new master</div>
+                    <div class="doc">Core_Returns_RECONCILED.xlsx</div>
+                    <div class="act">Drop the workbook or click</div>
+                    <div class="hint">Last week's master. Leave empty to start a brand-new one.</div>
                     <input type="file" id="masterFile" accept=".xlsx,.xlsm">
                 </div>
                 <div class="file-list" id="masterList"></div>
@@ -242,8 +251,9 @@
             <div class="form-group">
                 <label class="title">2 · Weekly credit memo PDFs</label>
                 <div class="drop-zone" id="memoZone">
-                    <div>Drop credit memo PDF(s) or click</div>
-                    <div class="hint">Mopar Weekly Global Core Return Credit Memo · several OK</div>
+                    <div class="doc">Mopar Weekly Global Core Return Credit Memo</div>
+                    <div class="act">Drop credit memo PDF(s) or click</div>
+                    <div class="hint">This week's memo. Several memos at once are fine.</div>
                     <input type="file" id="memoFiles" accept=".pdf" multiple>
                 </div>
                 <div class="file-list" id="memoList"></div>
@@ -252,7 +262,8 @@
             <div class="form-group">
                 <label class="title">3 · Signed GCRS shipper scans</label>
                 <div class="drop-zone" id="shipZone">
-                    <div>Drop shipper scan PDF(s) or click</div>
+                    <div class="doc">GCRS Dealer Shipper Document</div>
+                    <div class="act">Drop shipper scan PDF(s) or click</div>
                     <div class="hint">This week's new scans. To build the Credit Request PDF, also add the scans from about 60 days back.</div>
                     <input type="file" id="shipFiles" accept=".pdf" multiple>
                 </div>
@@ -262,7 +273,8 @@
             <div class="form-group">
                 <label class="title">4 · DealerCONNECT payment data <span class="opt">(optional)</span></label>
                 <div class="drop-zone" id="dcZone">
-                    <div>Drop Paid / UnPaid export (CSV or XLSX) or click</div>
+                    <div class="doc">DealerCONNECT Payment Inquiry export</div>
+                    <div class="act">Drop the Paid / UnPaid export (CSV or XLSX) or click</div>
                     <div class="hint">Global Core Returns › Core Tracking/Inquiry › Payment Inquiry</div>
                     <input type="file" id="dcFiles" accept=".csv,.txt,.xlsx,.xlsm,.xls" multiple>
                 </div>
@@ -315,22 +327,38 @@
 
 <script>
     // ── upload zones ──
+    // Files dropped or picked in separate batches add up (a multi-file box
+    // keeps what it already has); the ✕ next to a file removes it.
     function wireZone(zoneId, inputId, listId) {
         const zone = document.getElementById(zoneId);
         const input = document.getElementById(inputId);
         const list = document.getElementById(listId);
+        let files = [];
+        function sync() {
+            const dt = new DataTransfer();
+            files.forEach(f => dt.items.add(f));
+            input.files = dt.files;
+            list.innerHTML = files.map((f, i) => '<span>✓ ' + esc(f.name) +
+                '<button type="button" class="rm" data-i="' + i + '" aria-label="Remove ' + esc(f.name) + '" title="Remove">✕</button></span>').join('');
+        }
+        function add(incoming) {
+            const picked = Array.from(incoming || []);
+            if (!picked.length) return;
+            if (!input.multiple) files = picked.slice(0, 1);
+            else picked.forEach(f => { if (!files.some(g => g.name === f.name && g.size === f.size)) files.push(f); });
+            sync();
+        }
         zone.addEventListener('click', () => input.click());
-        input.addEventListener('change', () => showFiles(input, list));
+        input.addEventListener('change', () => add(input.files));
         ['dragenter', 'dragover'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('dragover'); }));
         ['dragleave', 'drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('dragover'); }));
-        zone.addEventListener('drop', ev => {
-            ev.preventDefault();
-            input.files = ev.dataTransfer.files;
-            showFiles(input, list);
+        zone.addEventListener('drop', ev => { ev.preventDefault(); add(ev.dataTransfer.files); });
+        list.addEventListener('click', ev => {
+            const b = ev.target.closest('.rm');
+            if (!b) return;
+            files.splice(Number(b.dataset.i), 1);
+            sync();
         });
-    }
-    function showFiles(input, list) {
-        list.innerHTML = Array.from(input.files).map(f => '<span>✓ ' + esc(f.name) + '</span>').join('');
     }
     wireZone('masterZone', 'masterFile', 'masterList');
     wireZone('memoZone', 'memoFiles', 'memoList');
