@@ -24,7 +24,7 @@
     {% if stores %}
     <div class="table-wrap">
         <table>
-            <thead><tr><th>Store</th><th>Dealer</th><th class="num">Users</th><th class="num">Runs</th><th>Last run</th><th class="num">Master rows</th><th class="num">Unpaid</th><th></th></tr></thead>
+            <thead><tr><th>Store</th><th>Dealer</th><th class="num">Users</th><th class="num">Runs</th><th>Last run</th><th class="num">Master rows</th><th class="num">Unpaid</th><th class="num">Stored</th><th></th></tr></thead>
             <tbody>
             {% for s in stores %}
             <tr>
@@ -35,6 +35,7 @@
                 <td class="nowrap">{{ s.last_run_at|central or 'None yet' }}</td>
                 <td class="num">{{ '{:,}'.format(s.master_rows) if s.master_rows is not none else '' }}</td>
                 <td class="num">{% if s.unpaid_count is not none %}{{ s.unpaid_count }} &middot; {{ s.unpaid_amount|money }}{% endif %}</td>
+                <td class="num">{{ s.stored_bytes|size }}</td>
                 <td class="nowrap">
                     <form method="post" action="{{ url_for('accounts.owner_open', store_id=s.id) }}">
                         {{ form_guard() }}
@@ -49,5 +50,6 @@
     {% else %}
     <p class="note" style="margin-bottom:0;">No stores yet.</p>
     {% endif %}
+    <p class="note" style="margin:14px 0 0;">The database is using {{ database_bytes|size }}. "Stored" is each store's saved masters and run files. The size of the database's disk is set on Render: raise it there before it fills.</p>
 </div>
 {% endblock %}

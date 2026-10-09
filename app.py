@@ -22,9 +22,11 @@ import tempfile
 import os
 import gc
 import shutil
+import time
 import uuid
 
 import accounts
+from accounts import db as acct_db
 from accounts import storage as acct_storage
 from accounts import web as acct_web
 from recon import engine as recon_engine
@@ -44,6 +46,9 @@ OCR_DPI = 150  # was 200; lower RAM/time with small accuracy tradeoff
 # Letter at 150 DPI is 1650 px on the long edge. Cap so a bad page box
 # cannot rasterize into a multi-hundred-MB bitmap. Normal scans unchanged.
 OCR_SCALE_TO = 1650
+# Seconds to wait between tries when a finished run cannot be saved because
+# the database is away (about half a minute in all).
+SAVE_RETRY_WAITS = (5, 10, 15)
 
 # ── regex ────────────────────────────────────────────────────────────────
 CTRL_RE = re.compile(r'^([Cc©€6][A-Za-z0-9]\d{7,8})\b')
@@ -635,6 +640,10 @@ def _save_uploads(files, folder, allowed, label):
 def api_reconcile():
     recon_jobs.cleanup()
     store_id, actor = _account()
+    # Looked up before anything is created, so a database hiccup here
+    # leaves no half-made job behind.
+    saved_now = acct_storage.current_master(store_id) if store_id else None
+    admin = bool(store_id) and acct_web.is_admin()
     job_id, d = recon_jobs.new_job(
         meta={'store_id': store_id} if store_id else None)
     inbox = os.path.join(d, 'in')
@@ -651,8 +660,7 @@ def api_reconcile():
     except ValueError as e:
         recon_jobs.discard(job_id)
         return jsonify({'error': str(e)}), 400
-    if store_id and master and not acct_web.is_admin() and \
-            acct_storage.current_master(store_id):
+    if store_id and master and not admin and saved_now:
         # Swapping the store's saved master for another workbook is an
         # admin's call; everyone else runs from the saved one.
         recon_jobs.discard(job_id)
@@ -687,9 +695,7 @@ def api_reconcile():
               'shippers': shippers, 'dc': dc, 'dc_text': dc_text}
     out_dir = os.path.join(d, 'out')
     state = {'master_in': None}
-    replacing = bool(store_id and master and
-                     acct_storage.current_master(store_id))
-    admin = bool(store_id) and acct_web.is_admin()
+    replacing = bool(store_id and master and saved_now)
 
     def work(progress):
         # With accounts on and no workbook uploaded, the run starts from
@@ -722,9 +728,20 @@ def api_reconcile():
         return jsonify({'job_id': job_id})
 
     def on_done(jid, result, out):
-        saved = acct_storage.finish_run(jid, store_id, actor, result, out,
-                                        master_in=state['master_in'],
-                                        may_replace=admin)
+        # A run can take minutes. If the database happens to be away at
+        # the moment it ends, wait for it rather than lose the save. Only
+        # when nothing was sent yet (Unavailable), so a save is never
+        # applied twice.
+        for wait in SAVE_RETRY_WAITS + (None,):
+            try:
+                saved = acct_storage.finish_run(
+                    jid, store_id, actor, result, out,
+                    master_in=state['master_in'], may_replace=admin)
+                break
+            except acct_db.Unavailable:
+                if wait is None:
+                    raise
+                time.sleep(wait)
         return {'saved': True, 'master_held': saved['held']}
 
     def on_error(jid, message):

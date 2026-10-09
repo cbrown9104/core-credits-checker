@@ -454,6 +454,13 @@ class TestStores(AccountsCase):
         page = owner.get('/owner')
         self.assertEqual(page.status_code, 200)
         self.assertIn(b'Owner Test Store', page.data)
+        # how much is stored, so a filling disk is seen before it is full
+        self.assertRegex(page.get_data(as_text=True),
+                         r'The database is using [\d,.]+ (KB|MB|GB)')
+        from accounts import web
+        self.assertEqual([web._size(n) for n in (0, 2048, 5 * 1024 ** 2,
+                                                 3 * 1024 ** 3, None)],
+                         ['0 KB', '2 KB', '5.0 MB', '3.00 GB', ''])
         # odd characters in a name are cleaned, never a server error
         r = self.post(owner, '/owner/stores', {
             'name': 'Odd\x00Name\tStore', 'admin_email': 'odd@odd.test'})
@@ -984,6 +991,352 @@ class TestSavedWork(AccountsCase):
         self.assertIn(b'$4,740.00', page)
         # a quick check is a history line only: nothing to open
         self.assertEqual(quin.get('/api/jobs/' + 'a' * 32).status_code, 404)
+
+
+class TestWhenTheDatabaseIsAway(AccountsCase):
+    """A database that cannot be reached gives a plain "back in a minute"
+    answer, quickly, and everything works again by itself afterwards."""
+
+    def away(self):
+        """Make every database call fail, as an outage does. Returns the
+        function that ends the outage."""
+        from accounts import db
+        real = db._checkout
+
+        def gone():
+            raise db.Unavailable('The database could not be reached.')
+
+        db._checkout = gone
+        return lambda: setattr(db, '_checkout', real)
+
+    def test_pages_say_back_in_a_minute_and_recover(self):
+        self.make_store('Away Store', 'ava@away.test')
+        ava = self.sign_in('ava@away.test')
+        token, store = self.guard(ava)
+        back = self.away()
+        try:
+            page = ava.get('/reconcile')
+            self.assertEqual(page.status_code, 503)
+            self.assertIn(b'Back in a minute', page.data)
+            self.assertNotIn(b'Traceback', page.data)
+            self.assertEqual(page.headers['Retry-After'], '30')
+            api = ava.get('/api/jobs/' + '0' * 32)
+            self.assertEqual(api.status_code, 503)
+            self.assertIn('Wait a minute', api.get_json()['error'])
+            for path in ('/history', '/users', '/master/download'):
+                self.assertEqual(ava.get(path).status_code, 503, path)
+            r = ava.post('/users/add', data={
+                'csrf_token': token, 'store_check': store,
+                'email': 'new@away.test', 'role': 'user'})
+            self.assertEqual(r.status_code, 503)
+            # the server itself still says it is alive
+            self.assertEqual(ava.get('/healthz').status_code, 200)
+            # a visitor who is not signed in still gets the front page
+            self.assertEqual(self.client().get('/').status_code, 200)
+        finally:
+            back()
+        # nothing to do afterwards: still signed in, same store
+        page = ava.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Away Store', page.data)
+
+    def test_a_run_submitted_during_an_outage_leaves_nothing_behind(self):
+        from accounts import db, storage
+        from recon import jobs
+        self.make_store('Hiccup Store', 'hy@hiccup.test')
+        hy = self.sign_in('hy@hiccup.test')
+        token, store = self.guard(hy)
+        real = storage.current_master
+
+        def gone(store_id):
+            raise db.Unavailable('The database could not be reached.')
+
+        with jobs._lock:
+            before = set(jobs._jobs)
+        storage.current_master = gone
+        try:
+            r = hy.post('/api/reconcile', data={'dc_text': 'x'},
+                        content_type='multipart/form-data',
+                        headers={'X-CSRF-Token': token, 'X-Store-Id': store})
+        finally:
+            storage.current_master = real
+        self.assertEqual(r.status_code, 503)
+        self.assertIn('error', r.get_json())
+        with jobs._lock:
+            self.assertEqual(set(jobs._jobs), before)
+
+    def test_a_run_that_ends_during_a_short_outage_is_still_saved(self):
+        import app as webapp
+        from accounts import db, storage
+        store = self.make_store('Patient Store', 'pia@patient.test')
+        pia = self.sign_in('pia@patient.test')
+        real, waits = storage.finish_run, webapp.SAVE_RETRY_WAITS
+        calls = []
+
+        def away_twice(*a, **k):
+            calls.append(1)
+            if len(calls) <= 2:
+                raise db.Unavailable('The database could not be reached.')
+            return real(*a, **k)
+
+        def away_for_good(*a, **k):
+            calls.append(1)
+            raise db.Unavailable('The database could not be reached.')
+
+        webapp.SAVE_RETRY_WAITS = (0, 0, 0)
+        try:
+            storage.finish_run = away_twice
+            job_id, job = self.first_run(pia)
+            self.assertEqual(job['status'], 'done', job.get('error'))
+            self.assertTrue(job['result']['saved'])
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(storage.current_master(store['id'])['row_count'],
+                             1)
+            # an outage that outlasts the wait: the run says so, files stay
+            del calls[:]
+            storage.finish_run = away_for_good
+            job_id, job = self.run_recon(pia, {
+                'dc_text': 'C400000001\t11111111AA\t\t50.00\t\t\t',
+                'asof': '2026-10-06'})
+            self.assertEqual(job['status'], 'done')
+            self.assertFalse(job['result']['saved'])
+            self.assertIn('could not be saved', job['result']['warnings'][0])
+            self.assertEqual(len(calls), 4)
+        finally:
+            storage.finish_run, webapp.SAVE_RETRY_WAITS = real, waits
+        self.assertEqual(len(storage.master_versions(store['id'])), 1)
+
+    def test_a_database_error_in_the_middle_of_a_page_is_a_503_too(self):
+        import psycopg
+        from accounts import storage
+        self.make_store('Midway Store', 'mia@midway.test')
+        mia = self.sign_in('mia@midway.test')
+        real = storage.list_runs
+
+        def dropped(*a, **k):
+            raise psycopg.OperationalError('server closed the connection '
+                                           'unexpectedly')
+
+        storage.list_runs = dropped
+        try:
+            page = mia.get('/history')
+        finally:
+            storage.list_runs = real
+        self.assertEqual(page.status_code, 503)
+        self.assertIn(b'Back in a minute', page.data)
+        self.assertEqual(mia.get('/history').status_code, 200)
+
+    def test_a_server_that_starts_without_its_database_does_not_crash(self):
+        from accounts import web
+        key, booted = self.app.secret_key, web._booted
+        self.app.secret_key = None          # as on a fresh start
+        web._booted = None
+        back = self.away()
+        try:
+            c = self.client()
+            for path in ('/', '/login', '/reconcile'):
+                page = c.get(path)
+                self.assertEqual(page.status_code, 503, path)
+                self.assertIn(b'Back in a minute', page.data)
+            self.assertEqual(c.get('/api/jobs/' + '0' * 32).status_code, 503)
+            self.assertEqual(c.post('/login', data={
+                'email': 'x@nowhere.test'}).status_code, 503)
+            self.assertEqual(c.get('/healthz').status_code, 200)
+        finally:
+            back()
+            self.app.secret_key, web._booted = key, booted
+        self.assertEqual(self.client().get('/').status_code, 200)
+
+    def test_an_unreachable_address_fails_fast_and_keeps_its_secret(self):
+        import contextlib
+        from accounts import db
+        good = os.environ['DATABASE_URL']
+        saved = (db.WAIT_SECONDS, db.RETRY_AFTER)
+        db.WAIT_SECONDS, db.RETRY_AFTER = 1, 60
+        out = io.StringIO()
+        try:
+            # nothing listens on port 1
+            os.environ['DATABASE_URL'] = \
+                'postgresql://nobody:hunter2secret@127.0.0.1:1/none'
+            c = self.client()
+            with contextlib.redirect_stdout(out), \
+                    self.assertLogs('psycopg.pool', 'WARNING') as logs:
+                t0 = time.monotonic()
+                self.assertEqual(c.get('/reconcile').status_code, 503)
+                first = time.monotonic() - t0
+                # while it is known to be down nobody waits in line
+                t0 = time.monotonic()
+                for _ in range(5):
+                    self.assertEqual(c.get('/reconcile').status_code, 503)
+                rest = time.monotonic() - t0
+            self.assertLess(first, 4)
+            self.assertLess(rest, 0.5)
+            said = out.getvalue() + ' '.join(r.getMessage()
+                                             for r in logs.records)
+            self.assertIn('cannot reach the database', said)
+            self.assertNotIn('hunter2secret', said)
+        finally:
+            db.WAIT_SECONDS, db.RETRY_AFTER = saved
+            os.environ['DATABASE_URL'] = good
+            db.close()
+        self.assertEqual(self.client().get('/').status_code, 200)
+
+    def test_only_one_request_at_a_time_retries_after_an_outage(self):
+        from accounts import db
+        self.assertEqual(db.one('SELECT 1 AS x')['x'], 1)
+        try:
+            db._down, db._down_until = True, time.monotonic() + 60
+            with self.assertRaises(db.Unavailable):     # too soon to retry
+                db.one('SELECT 1 AS x')
+            db._down_until = 0.0
+            db._probe.acquire()             # someone else is retrying now
+            try:
+                with self.assertRaises(db.Unavailable):
+                    db.one('SELECT 1 AS x')
+            finally:
+                db._probe.release()
+            # our turn: it is back, and the outage is over for everyone
+            self.assertEqual(db.one('SELECT 1 AS x')['x'], 1)
+            self.assertFalse(db._down)
+            self.assertFalse(db._probe.locked())
+        finally:
+            db._down, db._down_until = False, 0.0
+
+    def test_a_malformed_address_is_refused_without_being_echoed(self):
+        from accounts import db
+        for bad in ('PGPASSWORD=hunter2secret psql -h dpg-x-a -U u db',
+                    'postgres//u:hunter2secret@dpg-x-a/db',
+                    'dpg-x-a', 'https://u:hunter2secret@example.com/db',
+                    'postgresql://u:hunter2secret@dpg-x-a/db with a space',
+                    'postgresql://u:hunter2secret@[::1/db'):
+            with self.assertRaises(db.Unavailable) as caught:
+                db.check_url(bad)
+            self.assertNotIn('hunter2secret', str(caught.exception), bad)
+            self.assertIn('postgresql://', str(caught.exception))
+        for good in ('postgresql://u:p@dpg-x-a/db',
+                     'postgres://u:p@dpg-x-a.oregon-postgres.render.com/db'):
+            db.check_url(good)
+        # whatever the driver says about a failed connection, the address
+        # and its password are taken out before it is logged
+        u = 'postgresql://u:hunter2secret@dpg-x-a/db'
+        line = db.brief(Exception(f'bad thing at {u} (hunter2secret)'), u)
+        self.assertNotIn('hunter2secret', line)
+
+
+class TestStartUp(AccountsCase):
+    """The check that runs before the web server starts."""
+
+    def check(self, **env):
+        """Run the start-up check with these settings. Returns (exit
+        code, everything it printed)."""
+        import contextlib
+        from accounts import db, preflight
+        keys = ('DATABASE_URL', 'OWNER_EMAIL', 'MAIL_BACKEND',
+                'RESEND_API_KEY', 'APP_BASE_URL', 'RENDER_EXTERNAL_URL')
+        saved = {k: os.environ.get(k) for k in keys}
+        wait = preflight.WAIT_SECONDS
+        preflight.WAIT_SECONDS = 0
+        for k, v in env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        out = io.StringIO()
+        try:
+            db.close()
+            with contextlib.redirect_stdout(out):
+                code = preflight.main()
+        finally:
+            preflight.WAIT_SECONDS = wait
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            db.close()
+        return code, out.getvalue()
+
+    def empty_database(self):
+        import psycopg
+        from accounts import db
+        db.close()
+        with psycopg.connect(TEST_DB, autocommit=True) as conn:
+            conn.execute('DROP SCHEMA public CASCADE')
+            conn.execute('CREATE SCHEMA public')
+
+    def test_accounts_off_starts_without_touching_anything(self):
+        code, said = self.check(DATABASE_URL=None)
+        self.assertEqual(code, 0)
+        self.assertIn('Accounts are off', said)
+
+    def test_a_wrong_address_stops_the_start_with_a_plain_reason(self):
+        cases = {
+            'PGPASSWORD=hunter2secret psql -h dpg-x-a -U u db':
+                'not a database address',
+            'postgresql://nobody:hunter2secret@127.0.0.1:1/none':
+                'refused the connection',
+            'postgresql://nobody:hunter2secret@no-such-host.invalid/none':
+                'was not found',
+            TEST_DB.rsplit('/', 1)[0] + '/no_such_database_here':
+                'does not exist',
+        }
+        for address, expected in cases.items():
+            code, said = self.check(DATABASE_URL=address)
+            self.assertEqual(code, 1, said)
+            self.assertIn('NOT STARTED', said)
+            self.assertIn(expected, said)
+            self.assertNotIn('hunter2secret', said)
+
+    def test_accounts_are_not_turned_on_until_sign_in_can_work(self):
+        from accounts import core, db
+        self.empty_database()
+        # a brand-new database with the set-up half done: refuse to start
+        code, said = self.check(OWNER_EMAIL=None)
+        self.assertEqual(code, 1, said)
+        self.assertIn('OWNER_EMAIL', said)
+        code, said = self.check(MAIL_BACKEND=None, RESEND_API_KEY=None)
+        self.assertEqual(code, 1, said)
+        self.assertIn('RESEND_API_KEY', said)
+        self.assertNotIn('OWNER_EMAIL', said)
+        code, said = self.check(MAIL_BACKEND=None, APP_BASE_URL=None,
+                                RESEND_API_KEY='test-key-never-used')
+        self.assertEqual(code, 1, said)
+        self.assertIn('APP_BASE_URL', said)
+        self.assertNotIn('test-key-never-used', said)
+        # everything set: starts, the tables are there, the owner exists
+        code, said = self.check()
+        self.assertEqual(code, 0, said)
+        self.assertIn('Ready.', said)
+        self.assertTrue(core.user_by_email(OWNER)['is_owner'])
+        self.assertEqual(
+            db.one("SELECT value FROM settings WHERE key = "
+                   "'schema_version'")['value'], db.schema_version())
+        # once somebody has signed in, a missing setting is a warning:
+        # people who are signed in keep working
+        self.sign_in(OWNER)
+        code, said = self.check(MAIL_BACKEND=None, RESEND_API_KEY=None)
+        self.assertEqual(code, 0, said)
+        self.assertIn('WARNING: RESEND_API_KEY', said)
+
+    def test_tables_are_set_up_once_and_older_ones_are_brought_up(self):
+        from accounts import db
+        p = db.pool()
+        self.assertFalse(db._apply_schema(p, 10))    # nothing to do
+        # tables left by an earlier build: columns added since are missing
+        with db.connect() as conn:
+            conn.execute('ALTER TABLE users DROP COLUMN last_store_id')
+            conn.execute('ALTER TABLE memberships DROP COLUMN added_email')
+            conn.execute('ALTER TABLE memberships DROP COLUMN last_used_at')
+            conn.execute('ALTER TABLE login_tokens DROP COLUMN store_id')
+            conn.execute('ALTER TABLE masters DROP COLUMN held_reason')
+            conn.execute("DELETE FROM settings WHERE key = 'schema_version'")
+        db.close()
+        self.make_store('Upgrade Store', 'uli@upgrade.test')
+        uli = self.sign_in('uli@upgrade.test')
+        self.assertEqual(uli.get('/users').status_code, 200)
+        self.assertEqual(uli.get('/history').status_code, 200)
+        _, job = self.first_run(uli)
+        self.assertEqual(job['status'], 'done', job.get('error'))
 
 
 if __name__ == '__main__':

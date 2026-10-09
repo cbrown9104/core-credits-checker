@@ -160,10 +160,20 @@ def all_stores():
                (SELECT count(*) FROM runs r WHERE r.store_id = s.id)
                    AS run_count,
                mm.row_count AS master_rows, mm.unpaid_count,
-               mm.unpaid_amount, mm.created_at AS master_at
+               mm.unpaid_amount, mm.created_at AS master_at,
+               (SELECT coalesce(sum(octet_length(v.content)), 0)
+                  FROM masters v WHERE v.store_id = s.id) +
+               (SELECT coalesce(sum(f.size), 0) FROM run_files f
+                  JOIN runs r ON r.id = f.run_id WHERE r.store_id = s.id)
+                   AS stored_bytes
         FROM stores s
         LEFT JOIN masters mm ON mm.store_id = s.id AND mm.is_current
         ORDER BY s.name, s.id''')
+
+
+def database_bytes():
+    """Disk the whole database takes right now (files, tables, indexes)."""
+    return db.one('SELECT pg_database_size(current_database()) AS n')['n']
 
 
 def clean_dealer(value):

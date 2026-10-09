@@ -78,8 +78,23 @@ signed-in service:
 | `MAIL_FROM` | Sender, e.g. `Parts Manager Solutions <signin@partsmanagersolutions.com>`. The domain must be verified with Resend. |
 | `APP_NAME` | Name shown on the front page and in emails. Default `Parts Manager Solutions`. |
 
-The tables are created on first start (`accounts/schema.sql`). The key that
-signs the session cookie is generated once and kept in the database.
+The tables are created on first start (`accounts/schema.sql`) and brought up
+to date whenever that file changes. The key that signs the session cookie is
+generated once and kept in the database.
+
+**Start-up check.** `python -m accounts.preflight` runs before the web server
+(see `Dockerfile`). With accounts off it does nothing. With accounts on, the
+server does not start unless the database answers, and on a database nobody
+has signed in on yet, unless sign-in can work (`OWNER_EMAIL`, `RESEND_API_KEY`
+and `APP_BASE_URL` set). A wrong setting therefore fails the deploy with a
+plain reason in the log and the previous version keeps running. The password
+in `DATABASE_URL` is never printed.
+
+**If the database goes away** while the site is up, pages answer "Back in a
+minute" (HTTP 503) within seconds instead of hanging, `/healthz` keeps
+answering, and everything recovers by itself when the database is back. A run
+that finishes during an outage keeps its files downloadable for 2 hours and
+says it could not be saved.
 
 Not stored: the scans and memos you upload (deleted when a run ends).
 Stored per store: the master (every version), each run's result files and

@@ -10,10 +10,13 @@ import datetime
 import io
 import os
 import secrets
+import threading
+import traceback
 from urllib.parse import urlsplit
 
-from flask import (Blueprint, abort, flash, g, jsonify, redirect,
-                   render_template, request, send_file, session, url_for)
+from flask import (Blueprint, abort, flash, g, jsonify, make_response,
+                   redirect, render_template, request, send_file, session,
+                   url_for)
 from flask.sessions import SecureCookieSessionInterface
 from markupsafe import Markup
 
@@ -36,6 +39,10 @@ STORE_FREE = PUBLIC | {'accounts.owner', 'accounts.owner_create_store',
                        'accounts.choose_store'}
 
 _booted = None
+_boot_lock = threading.Lock()
+
+UNAVAILABLE = ('The site cannot reach its saved records right now. Nothing '
+               'was lost. Wait a minute, then try again.')
 
 
 def enabled():
@@ -137,7 +144,9 @@ def actor():
 
 
 def is_admin():
-    return bool(g.user) and (g.role == 'admin' or g.user['is_owner'])
+    user = getattr(g, 'user', None)
+    return bool(user) and (getattr(g, 'role', None) == 'admin' or
+                           user['is_owner'])
 
 
 def _boot(app):
@@ -146,12 +155,45 @@ def _boot(app):
     key = (db.url(), db.generation, os.environ.get('OWNER_EMAIL', ''))
     if _booted == key and app.secret_key:
         return
-    app.secret_key = core.secret('session_key')
-    core.ensure_owners()
-    # Runs live in this server's memory while they work. Anything still
-    # marked "running" at start-up was cut off by a restart.
-    storage.close_interrupted_runs()
-    _booted = key
+    with _boot_lock:        # the first requests arrive together
+        if _booted == key and app.secret_key:
+            return
+        app.secret_key = core.secret('session_key')
+        core.ensure_owners()
+        # Runs live in this server's memory while they work. Anything
+        # still marked "running" at start-up was cut off by a restart.
+        storage.close_interrupted_runs()
+        _booted = key
+
+
+def _db_errors():
+    """Errors that mean "the database is in trouble", not "the request
+    was wrong": it cannot be reached, or it dropped what it was doing."""
+    try:
+        import psycopg
+    except ImportError:         # accounts cannot be on without the driver
+        return (db.Unavailable,)
+    return (db.Unavailable, psycopg.OperationalError)
+
+
+def _unavailable(e=None):
+    """The answer while the database cannot be reached: a plain page (or
+    JSON for the app's own calls), never a stack trace. It touches neither
+    the session nor the database."""
+    if e is not None and not isinstance(e, db.Unavailable):
+        # reached, but it failed mid-request: worth the full detail
+        traceback.print_exception(type(e), e, e.__traceback__)
+    if _wants_json():
+        resp = jsonify({'error': UNAVAILABLE})
+    else:
+        resp = make_response(render_template(
+            'account/unavailable.html', message=UNAVAILABLE,
+            again=request.path if request.method in ('GET', 'HEAD')
+            else '/'))
+    resp.status_code = 503
+    resp.headers['Retry-After'] = '30'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
 
 
 class _Sessions(SecureCookieSessionInterface):
@@ -160,7 +202,14 @@ class _Sessions(SecureCookieSessionInterface):
 
     def open_session(self, app, request):
         if enabled():
-            _boot(app)
+            try:
+                _boot(app)
+            except _db_errors() as e:
+                # No database, so no way to tell who this is. _before
+                # answers with the "back in a minute" page.
+                request.environ['pms.db_down'] = e
+                if not app.secret_key:
+                    return None         # Flask supplies an empty session
         return super().open_session(app, request)
 
 
@@ -194,8 +243,13 @@ def _before():
     if not enabled():
         return None
     ep = request.endpoint
-    if ep == 'static':
+    # Neither needs to know who is asking. The health check in particular
+    # must answer while the database is away: the server itself is fine,
+    # and restarting it would not bring the database back.
+    if ep in ('static', 'accounts.healthz'):
         return None
+    if 'pms.db_down' in request.environ:
+        return _unavailable(request.environ['pms.db_down'])
 
     sx = session.get('sx')
     if sx:
@@ -323,6 +377,18 @@ def _money(v):
         return ''
 
 
+def _size(v):
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return ''
+    if n >= 1024 ** 3:
+        return f'{n / 1024 ** 3:,.2f} GB'
+    if n >= 1024 ** 2:
+        return f'{n / 1024 ** 2:,.1f} MB'
+    return f'{max(0, round(n / 1024)):,} KB'
+
+
 def init_app(app):
     app.register_blueprint(bp)
     app.session_interface = _Sessions()
@@ -341,8 +407,11 @@ def init_app(app):
     app.before_request(_before)
     app.after_request(_after)
     app.context_processor(_context)
+    for kind in _db_errors():
+        app.register_error_handler(kind, _unavailable)
     app.jinja_env.filters['central'] = _central
     app.jinja_env.filters['money'] = _money
+    app.jinja_env.filters['size'] = _size
 
 
 def _need_accounts():
@@ -634,6 +703,7 @@ def owner():
     _need_owner()
     return render_template('account/owner.html', active='owner',
                            stores=core.all_stores(),
+                           database_bytes=core.database_bytes(),
                            mail_ready=mailer.configured(),
                            mail_problem=mailer.last_problem)
 

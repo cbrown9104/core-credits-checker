@@ -500,13 +500,16 @@
                 document.getElementById('runBtn').disabled = false;
                 return;
             }
-            showProgress('Reconnecting…', [], e.message);
+            showProgress('Reconnecting…', [], 'Still trying to reach the server. This page keeps checking by itself.');
             pollTimer = setTimeout(() => poll(jobId), 3000);
         });
     }
     async function readJsonSafe(resp) {
         const data = await resp.json().catch(() => ({}));
         if (resp.status === 404) { throw Object.assign(new Error(data.error || 'Run not found'), { fatal: true }); }
+        // A server that is busy or restarting is not the run failing: the
+        // run keeps working, so keep asking instead of showing an error.
+        if (resp.status >= 500 || resp.status === 429) { throw new Error(data.error || ('The server is not answering (HTTP ' + resp.status + ').')); }
         return data;
     }
 
