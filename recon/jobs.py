@@ -127,13 +127,15 @@ def _run(job_id, work, on_done=None, on_error=None):
         except Exception as e:  # report, never crash the worker
             traceback.print_exc()
             message = str(e) or e.__class__.__name__
-            _update(job_id, status='error', finished=time.time(),
-                    error=message, message='Stopped with an error')
+            # Recorded on the account first, so the moment the page shows
+            # the run as stopped, the history already agrees.
             if on_error is not None:
                 try:
                     on_error(job_id, message)
                 except Exception:
                     traceback.print_exc()
+            _update(job_id, status='error', finished=time.time(),
+                    error=message, message='Stopped with an error')
         finally:
             shutil.rmtree(os.path.join(job_dir(job_id), 'in'),
                           ignore_errors=True)
