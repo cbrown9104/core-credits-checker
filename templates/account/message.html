@@ -1,0 +1,21 @@
+{% extends 'account/base.html' %}
+{% block title %}{{ title }} — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>{{ title }}</h1>
+    <p>{{ app_name }} — Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card">
+    {% for line in lines %}<p class="note">{{ line }}</p>{% endfor %}
+    {% if link %}<a class="btn-primary" href="{{ link }}">{{ link_label or 'Continue' }}</a>{% endif %}
+    {% if me %}
+    <form method="post" action="/logout" style="margin-top:16px;">
+        {{ form_guard() }}
+        <button class="btn-small" type="submit">Sign out</button>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

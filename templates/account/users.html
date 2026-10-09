@@ -1,0 +1,71 @@
+{% extends 'account/base.html' %}
+{% block title %}Users — {{ store.name }}{% endblock %}
+{% block subtitle %}Who can sign in to {{ store.name }}{% endblock %}
+{% block content %}
+{% if not mail_ready %}<div class="error-msg">Email is not set up yet. You can add people now, but invitations will not go out until it is.</div>{% endif %}
+<div class="card">
+    <h2>Add a person</h2>
+    <p class="note">They get an email with a sign-in link. Everyone on the store sees the same master, history and results.</p>
+    <form method="post" action="{{ url_for('accounts.users_add') }}">
+        {{ form_guard() }}
+        <div class="grid3">
+            <div><label class="title" for="email">Work email</label><input type="email" id="email" name="email" required autocomplete="off" placeholder="name@yourstore.com"></div>
+            <div><label class="title" for="role">Role</label>
+                <select id="role" name="role">
+                    <option value="user">User: runs reconciliations</option>
+                    <option value="admin">Admin: also adds and removes people</option>
+                </select></div>
+            <div style="display:flex;align-items:flex-end;"><button class="btn-primary" type="submit" style="width:100%;">Add and send link</button></div>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>People on this store</h2>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Email</th><th>Role</th><th>Added</th><th>Last opened this store</th><th></th></tr></thead>
+            <tbody>
+            {% for m in members %}
+            <tr>
+                <td>{{ m.email }}{% if m.id == me.id %} <span class="pill blue">You</span>{% endif %}</td>
+                <td>{{ 'Admin' if m.role == 'admin' else 'User' }}</td>
+                <td class="nowrap">{{ m.created_at|central }}</td>
+                <td class="nowrap">{{ m.last_used_at|central or 'Not yet' }}</td>
+                <td class="nowrap">
+                    <form method="post" action="{{ url_for('accounts.users_add') }}">
+                        {{ form_guard() }}
+                        <input type="hidden" name="email" value="{{ m.email }}">
+                        <input type="hidden" name="role" value="{{ 'user' if m.role == 'admin' else 'admin' }}">
+                        <button class="btn-small" type="submit">Make {{ 'user' if m.role == 'admin' else 'admin' }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('accounts.users_invite', user_id=m.id) }}">
+                        {{ form_guard() }}
+                        <button class="btn-small" type="submit">Send new link</button>
+                    </form>
+                    <form method="post" action="{{ url_for('accounts.users_remove', user_id=m.id) }}" data-confirm="Click again to remove">
+                        {{ form_guard() }}
+                        <button class="btn-small danger" type="submit">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Store details</h2>
+    <form method="post" action="{{ url_for('accounts.store_settings') }}">
+        {{ form_guard() }}
+        <div class="grid3">
+            <div><label class="title" for="name">Store name</label><input type="text" id="name" name="name" value="{{ store.name }}" maxlength="120" required{% if not me.is_owner %} readonly{% endif %}></div>
+            <div><label class="title" for="dealer_code">Dealer code</label><input type="text" id="dealer_code" name="dealer_code" value="{{ store.dealer_code }}" maxlength="8" inputmode="numeric"{% if not me.is_owner %} readonly{% endif %}></div>
+            <div><label class="title" for="threshold_days">Request credit at (days)</label><input type="number" id="threshold_days" name="threshold_days" value="{{ store.threshold_days }}" min="1" max="365"></div>
+        </div>
+        {% if not me.is_owner %}<p class="note" style="margin:12px 0 0;">The store name and dealer code are set by support. Ask us to change them.</p>{% endif %}
+        <button class="btn-primary" type="submit" style="margin-top:16px;">Save</button>
+    </form>
+</div>
+{% endblock %}

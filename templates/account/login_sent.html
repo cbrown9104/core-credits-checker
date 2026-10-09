@@ -1,0 +1,16 @@
+{% extends 'account/base.html' %}
+{% block title %}Check your email — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Check your email</h1>
+    <p>{{ app_name }} — Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card">
+    <p class="note">If <strong>{{ email }}</strong> is on a store, a sign-in link is on its way to it now.</p>
+    <p class="note">The link works once and expires in {{ minutes }} minutes. Open it on this computer.</p>
+    <p class="note" style="margin-bottom:0;">Nothing after a few minutes? Check the junk folder, then <a class="plain" href="{{ url_for('accounts.login') }}">ask for another link</a>. If your email was never added, ask your store admin to add you.</p>
+</div>
+{% endblock %}

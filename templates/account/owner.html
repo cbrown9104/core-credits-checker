@@ -1,0 +1,53 @@
+{% extends 'account/base.html' %}
+{% block title %}Stores — {{ app_name }}{% endblock %}
+{% block subtitle %}Every store on {{ app_name }}{% endblock %}
+{% block content %}
+{% if not mail_ready %}<div class="error-msg">Email is not set up yet, so sign-in links and invitations cannot be sent.</div>{% endif %}
+{% if mail_problem %}<div class="error-msg">Last email problem ({{ mail_problem.at|central }}): {{ mail_problem.what }}</div>{% endif %}
+<div class="card">
+    <h2>Add a store</h2>
+    <p class="note">The first admin can add the rest of their people on the Users page.</p>
+    <form method="post" action="{{ url_for('accounts.owner_create_store') }}">
+        {{ form_guard() }}
+        <div class="grid3">
+            <div><label class="title" for="name">Store name</label><input type="text" id="name" name="name" maxlength="120" required></div>
+            <div><label class="title" for="dealer_code">Dealer code</label><input type="text" id="dealer_code" name="dealer_code" maxlength="8" inputmode="numeric"></div>
+            <div><label class="title" for="admin_email">First admin's work email</label><input type="email" id="admin_email" name="admin_email" required autocomplete="off"></div>
+        </div>
+        <p class="note" style="margin:14px 0 0;"><label><input type="checkbox" name="send_invite" value="1" checked> Email them a sign-in link now</label></p>
+        <button class="btn-primary" type="submit" style="margin-top:14px;">Create store</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>Stores</h2>
+    {% if stores %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Store</th><th>Dealer</th><th class="num">Users</th><th class="num">Runs</th><th>Last run</th><th class="num">Master rows</th><th class="num">Unpaid</th><th></th></tr></thead>
+            <tbody>
+            {% for s in stores %}
+            <tr>
+                <td><strong>{{ s.name }}</strong></td>
+                <td>{{ s.dealer_code }}</td>
+                <td class="num">{{ s.user_count }}</td>
+                <td class="num">{{ s.run_count }}</td>
+                <td class="nowrap">{{ s.last_run_at|central or 'None yet' }}</td>
+                <td class="num">{{ '{:,}'.format(s.master_rows) if s.master_rows is not none else '' }}</td>
+                <td class="num">{% if s.unpaid_count is not none %}{{ s.unpaid_count }} &middot; {{ s.unpaid_amount|money }}{% endif %}</td>
+                <td class="nowrap">
+                    <form method="post" action="{{ url_for('accounts.owner_open', store_id=s.id) }}">
+                        {{ form_guard() }}
+                        <button class="btn-small" type="submit">Open</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="note" style="margin-bottom:0;">No stores yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

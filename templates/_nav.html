@@ -1,0 +1,67 @@
+{# Shared top of every signed-in page: which store, who, and the tabs.
+   With accounts off this is just the two original tabs. #}
+{% if accounts_on and me %}
+<style>
+    .acct-bar {
+        display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+        background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px;
+        padding: 10px 16px; margin: 0 0 22px; font-size: 13px; color: #b0b0cc;
+    }
+    .acct-bar > div:first-child { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .acct-bar strong { color: #fff; font-size: 15px; }
+    .acct-bar .dim { color: #6a6a9a; }
+    .acct-bar .who { display: flex; align-items: center; gap: 12px; }
+    .acct-bar form { display: inline; margin: 0; }
+    .acct-bar select {
+        background: #0f3460; color: #e0e0e0; border: 1px solid #3a3a6a; border-radius: 6px;
+        padding: 6px 8px; font-size: 14px; font-weight: 600; max-width: 260px;
+    }
+    .acct-bar button.out {
+        background: none; border: 1px solid #3a3a6a; color: #b0b0cc; border-radius: 6px;
+        padding: 6px 12px; font-size: 13px; cursor: pointer;
+    }
+    .acct-bar button.out:hover { color: #fff; border-color: #5a8dee; }
+    .acct-bar .pill-owner { background: #4a3a1a; color: #f0c060; border-radius: 10px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+</style>
+<div class="acct-bar">
+    <div>
+        {% if my_stores|length > 1 %}
+        <form method="post" action="/switch-store">
+            {{ form_guard() }}
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <select name="store_id" aria-label="Store" onchange="this.form.submit()">
+                {% for s in my_stores %}<option value="{{ s.id }}" {{ 'selected' if store and s.id == store.id }}>{{ s.name }}</option>{% endfor %}
+                {% if store and not (my_stores|selectattr('id', 'equalto', store.id)|list) %}<option value="{{ store.id }}" selected>{{ store.name }}</option>{% endif %}
+            </select>
+        </form>
+        {% elif store %}<strong>{{ store.name }}</strong>{% else %}<strong>{{ app_name }}</strong>{% endif %}
+        {% if store and store.dealer_code %}<span class="dim">Dealer {{ store.dealer_code }}</span>{% endif %}
+        {% if store and me.is_owner and not (my_stores|selectattr('id', 'equalto', store.id)|list) %}<span class="pill-owner">Viewing as owner</span>{% endif %}
+    </div>
+    <div class="who">
+        <span>{{ me.email }}</span>
+        <form method="post" action="/logout">
+            {{ form_guard() }}
+            <button class="out" type="submit">Sign out</button>
+        </form>
+    </div>
+</div>
+{% endif %}
+<nav class="tabs"{% if accounts_on and me %} style="margin-top:0;"{% endif %}>
+    {% if not (accounts_on and me) or store %}
+    <a class="tab{{ ' active' if active == 'quick' }}" href="/">Quick Check</a>
+    <a class="tab{{ ' active' if active == 'reconcile' }}" href="/reconcile">Full Reconciliation</a>
+    {% endif %}
+    {% if accounts_on and me %}
+    {% if store %}<a class="tab{{ ' active' if active == 'history' }}" href="/history">History</a>{% endif %}
+    {% if store and is_admin %}<a class="tab{{ ' active' if active == 'users' }}" href="/users">Users</a>{% endif %}
+    {% if me.is_owner %}<a class="tab{{ ' active' if active == 'owner' }}" href="/owner">Stores</a>{% endif %}
+    {% endif %}
+</nav>
+<script>
+    window.CSRF = {{ csrf_token()|tojson }};
+    // The store this page is showing, sent with every action so a click
+    // on a stale tab cannot act on a different store.
+    window.STORE_ID = {{ (store.id if store else '')|string|tojson }};
+    window.guardHeaders = function () { return { 'X-CSRF-Token': window.CSRF || '', 'X-Store-Id': window.STORE_ID || '' }; };
+</script>

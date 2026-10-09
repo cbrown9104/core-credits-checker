@@ -1,0 +1,22 @@
+{% extends 'account/base.html' %}
+{% block title %}Sign in — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Almost there</h1>
+    <p>{{ app_name }} — Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card">
+    {% if signed_in_as %}
+    <div class="error-msg">This browser is signed in as <strong>{{ signed_in_as }}</strong>. Continuing signs it in as a different person: <strong>{{ email }}</strong>. If you did not ask for this link, close this page.</div>
+    {% endif %}
+    <p class="note">Signing in as <strong>{{ email }}</strong>.</p>
+    <form method="post" action="{{ url_for('accounts.login_link', token=token) }}">
+        {{ form_guard() }}
+        <button class="btn-primary wide" type="submit" autofocus>Continue</button>
+    </form>
+    <p class="note" style="margin:16px 0 0;">You stay signed in on this browser for 30 days.</p>
+</div>
+{% endblock %}

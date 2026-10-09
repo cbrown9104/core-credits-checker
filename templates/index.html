@@ -396,10 +396,7 @@
             <p>Compare GCRS shipper documents against Mopar credit memos to find unclaimed core returns</p>
         </div>
 
-        <nav class="tabs">
-            <a class="tab active" href="/">Quick Check</a>
-            <a class="tab" href="/reconcile">Full Reconciliation</a>
-        </nav>
+        {% include '_nav.html' %}
 
         <div class="error-msg" id="errorMessage"></div>
 
@@ -538,6 +535,7 @@
                 const resp = await fetch('/api/check-cores', {
                     method: 'POST',
                     body: fd,
+                    headers: window.guardHeaders ? window.guardHeaders() : {},
                 });
 
                 const raw = await resp.text();

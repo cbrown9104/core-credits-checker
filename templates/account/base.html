@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a2e; min-height: 100vh; padding: 20px; color: #e0e0e0;
+        }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .container.narrow { max-width: 460px; }
+        .header { text-align: center; margin-bottom: 30px; padding: 30px 20px 20px; }
+        .header h1 { color: #fff; font-size: 32px; margin-bottom: 6px; letter-spacing: -0.5px; }
+        .header p { color: #8888aa; font-size: 15px; }
+        .tabs { display: flex; justify-content: center; gap: 8px; margin: -14px 0 26px; flex-wrap: wrap; }
+        .tab {
+            padding: 9px 18px; border-radius: 8px; border: 1px solid #2a2a4a;
+            background: #16213e; color: #8888aa; font-size: 14px; font-weight: 600; text-decoration: none;
+        }
+        .tab:hover { color: #fff; border-color: #3a3a6a; }
+        .tab.active { background: #0f3460; color: #8ab4f8; border-color: #5a8dee; }
+        .card { background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 26px; margin-bottom: 22px; }
+        .card h2 { color: #8ab4f8; font-size: 18px; margin-bottom: 12px; }
+        .note { font-size: 13px; color: #b0b0cc; line-height: 1.55; margin-bottom: 12px; }
+        label.title {
+            display: block; font-weight: 600; color: #b0b0cc; margin-bottom: 8px;
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        input[type="email"], input[type="text"], input[type="number"], select {
+            width: 100%; padding: 11px 12px; background: #0f3460; color: #e0e0e0;
+            border: 1px solid #3a3a6a; border-radius: 6px; font-size: 15px;
+        }
+        input:focus, select:focus { outline: none; border-color: #5a8dee; }
+        .btn-primary {
+            padding: 13px 22px; background: linear-gradient(135deg, #5a8dee, #7c5ce7); color: #fff; border: none;
+            border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block;
+        }
+        .btn-primary:hover { box-shadow: 0 6px 20px rgba(90, 141, 238, 0.35); }
+        .btn-primary.wide { width: 100%; margin-top: 16px; text-align: center; }
+        .btn-small {
+            padding: 6px 12px; background: #2a2a4a; color: #b0b0cc; border: 1px solid #3a3a6a;
+            border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block;
+        }
+        .btn-small:hover { background: #3a3a5a; color: #fff; }
+        .btn-small.danger:hover { border-color: #e06c75; color: #f0a0a0; }
+        .btn-small.armed { background: #4a1f28; border-color: #e06c75; color: #fff; }
+        .error-msg { background: #3e1c24; border: 1px solid #6b2a36; color: #f0a0a0; padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-size: 14px; }
+        .ok-msg { background: #1a3a2a; border: 1px solid #2a6a3a; color: #8cd88c; padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-size: 14px; }
+        .table-wrap { background: #16213e; border: 1px solid #2a2a4a; border-radius: 10px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; min-width: 640px; }
+        thead { background: #0f3460; }
+        th { padding: 10px 12px; text-align: left; font-weight: 600; color: #8ab4f8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+        td { padding: 9px 12px; border-bottom: 1px solid #1e2e50; font-size: 13px; color: #c0c0e0; vertical-align: middle; }
+        td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        td.nowrap { white-space: nowrap; }
+        td form { display: inline; }
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+        .pill.red { background: #4a1f28; color: #f0a0a0; } .pill.amber { background: #4a3a1a; color: #f0c060; }
+        .pill.blue { background: #1a2e55; color: #8ab4f8; } .pill.green { background: #1a3a2a; color: #8cd88c; }
+        .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .grid3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 16px; }
+        @media (max-width: 760px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+        .facts { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 14px; }
+        .fact .n { font-size: 24px; font-weight: 700; color: #fff; }
+        .fact .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6868aa; }
+        a.plain { color: #8ab4f8; }
+        .footer { text-align: center; margin-top: 30px; color: #4a4a6a; font-size: 12px; line-height: 1.6; }
+        .footer a { color: #6a6a9a; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+<div class="container{% block container_class %}{% endblock %}">
+    {% block header %}
+    <div class="header">
+        <h1>Core Credits Checker</h1>
+        <p>{% block subtitle %}{{ app_name }}{% endblock %}</p>
+    </div>
+    {% include '_nav.html' %}
+    {% endblock %}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="{{ 'error-msg' if category == 'error' else 'ok-msg' }}" role="status">{{ message }}</div>
+    {% endfor %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+
+    <div class="footer">{% block footer %}{{ app_name }} &mdash; built for CDJR parts operations{% endblock %}</div>
+</div>
+<script>
+    // Two-click confirm for forms with data-confirm (no pop-up dialogs):
+    // the first click turns the button into the question, the second sends.
+    document.addEventListener('submit', function (ev) {
+        var f = ev.target;
+        if (!f.dataset || !f.dataset.confirm || f.dataset.armed === '1') return;
+        ev.preventDefault();
+        var b = f.querySelector('button[type="submit"]');
+        if (!b) return;
+        var old = b.textContent;
+        f.dataset.armed = '1';
+        b.textContent = f.dataset.confirm;
+        b.classList.add('armed');
+        setTimeout(function () { f.dataset.armed = ''; b.textContent = old; b.classList.remove('armed'); }, 6000);
+    });
+</script>
+</body>
+</html>

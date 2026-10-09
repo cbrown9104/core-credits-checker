@@ -57,6 +57,19 @@
         .drop-zone .act { font-size: 13px; color: #7f8fc0; }
         .drop-zone .hint { font-size: 11px; margin-top: 4px; color: #6a6a9a; line-height: 1.45; max-width: 420px; }
 
+        .saved-master {
+            padding: 18px 16px; background: #12283f; border: 1px solid #2a6a3a; border-radius: 8px;
+            text-align: center; min-height: 124px; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 4px;
+        }
+        .saved-master .doc { font-size: 15px; font-weight: 600; color: #8cd88c; }
+        .saved-master .act { font-size: 13px; color: #c0c0e0; }
+        .saved-master .hint { font-size: 11px; margin-top: 4px; color: #7f8fc0; line-height: 1.6; max-width: 420px; }
+        .saved-master a, .saved-master button.linkish {
+            color: #8ab4f8; background: none; border: none; font-size: 11px; cursor: pointer;
+            text-decoration: underline; padding: 0; font-family: inherit;
+        }
+
         .file-list { margin-top: 8px; font-size: 12px; color: #6abf6a; }
         .file-list span { display: flex; align-items: center; gap: 6px; padding: 2px 0; word-break: break-all; }
         .file-list .rm {
@@ -228,10 +241,7 @@
         <p>Full reconciliation — update the Core Returns master, build the credit request, check DealerCONNECT</p>
     </div>
 
-    <nav class="tabs">
-        <a class="tab" href="/">Quick Check</a>
-        <a class="tab active" href="/reconcile">Full Reconciliation</a>
-    </nav>
+    {% include '_nav.html' %}
 
     <div class="error-msg" id="errorMessage"></div>
 
@@ -239,13 +249,31 @@
         <div class="upload-grid">
             <div class="form-group">
                 <label class="title">1 · Master workbook</label>
-                <div class="drop-zone" id="masterZone">
-                    <div class="doc">Core_Returns_RECONCILED.xlsx</div>
-                    <div class="act">Drop the workbook or click</div>
-                    <div class="hint">Last week's master. Leave empty to start a brand-new one.</div>
-                    <input type="file" id="masterFile" accept=".xlsx,.xlsm">
+                {% if saved_master %}
+                <div class="saved-master" id="savedMaster">
+                    <div class="doc">Saved on your store's account</div>
+                    <div class="act">{{ '{:,}'.format(saved_master.row_count) }} rows{% if saved_master.unpaid_count is not none %} · {{ saved_master.unpaid_count }} unpaid{% endif %}</div>
+                    <div class="hint">Last saved {{ saved_master.created_at|central }}{% if saved_master.created_email %} by {{ saved_master.created_email }}{% endif %}.<br>
+                        This run starts from it and saves the updated master back.<br>
+                        <a href="/master/download">Download it</a>{% if is_admin %} · <button type="button" class="linkish" onclick="showReplaceMaster()">Use a different workbook…</button>{% endif %}</div>
                 </div>
-                <div class="file-list" id="masterList"></div>
+                {% endif %}
+                <div id="masterReplace"{% if saved_master %} style="display:none;"{% endif %}>
+                    <div class="drop-zone" id="masterZone">
+                        <div class="doc">Core_Returns_RECONCILED.xlsx</div>
+                        <div class="act">Drop the workbook or click</div>
+                        {% if saved_master %}
+                        <div class="hint">The workbook you drop here replaces the saved master: this run starts from it instead. The saved one stays in History.</div>
+                        {% elif accounts_on and me %}
+                        <div class="hint">First time: drop the master you keep now, or leave empty to start a brand-new one. After this run it is saved to your store's account.</div>
+                        {% else %}
+                        <div class="hint">Last week's master. Leave empty to start a brand-new one.</div>
+                        {% endif %}
+                        <input type="file" id="masterFile" accept=".xlsx,.xlsm">
+                    </div>
+                    <div class="file-list" id="masterList"></div>
+                    {% if saved_master %}<button class="paste-toggle" type="button" onclick="keepSavedMaster()">Keep using the saved master</button>{% endif %}
+                </div>
             </div>
 
             <div class="form-group">
@@ -291,11 +319,11 @@
             </div>
             <div class="form-group">
                 <label class="title">Request credit at (days unpaid)</label>
-                <input type="number" id="threshold" value="60" min="1" max="365">
+                <input type="number" id="threshold" value="{{ store.threshold_days if store else 60 }}" min="1" max="365">
             </div>
             <div class="form-group">
                 <label class="title">Dealer code</label>
-                <input type="text" id="dealer" placeholder="Read from your documents" maxlength="8" inputmode="numeric">
+                <input type="text" id="dealer" value="{{ store.dealer_code if store else '' }}" placeholder="Read from your documents" maxlength="8" inputmode="numeric">
             </div>
         </div>
 
@@ -320,7 +348,11 @@
     <div class="results" id="results"></div>
 
     <div class="footer">
+        {% if accounts_on and me %}
+        The scans and memos you upload are deleted as soon as the run finishes. Your master and each run's result files are saved to your store's account (see History).<br>
+        {% else %}
         Uploaded files are deleted as soon as the run finishes. Result files are deleted from the server after 2 hours — download what you need.<br>
+        {% endif %}
         Core Credits Checker — built for CDJR parts operations
     </div>
 </div>
@@ -365,6 +397,21 @@
     wireZone('shipZone', 'shipFiles', 'shipList');
     wireZone('dcZone', 'dcFiles', 'dcList');
 
+    // With a saved master, the upload box for it stays hidden unless asked for.
+    const HAS_SAVED_MASTER = {{ 'true' if saved_master else 'false' }};
+    function showReplaceMaster() {
+        document.getElementById('savedMaster').style.display = 'none';
+        document.getElementById('masterReplace').style.display = 'block';
+    }
+    function keepSavedMaster() {
+        const input = document.getElementById('masterFile');
+        input.value = '';
+        input.files = new DataTransfer().files;
+        document.getElementById('masterList').innerHTML = '';
+        document.getElementById('masterReplace').style.display = 'none';
+        document.getElementById('savedMaster').style.display = 'flex';
+    }
+
     function togglePaste() {
         const t = document.getElementById('dcText');
         t.style.display = t.style.display === 'block' ? 'none' : 'block';
@@ -392,7 +439,11 @@
         if (dcText.trim()) fd.append('dc_text', dcText);
         let count = 0;
         for (const _ of fd.keys()) count++;
-        if (!count) { showError('Add at least one file: the master workbook, a credit memo, a shipper scan or DealerCONNECT data.'); return; }
+        if (!count) {
+            showError(HAS_SAVED_MASTER ? 'Add at least one file: a credit memo, a shipper scan or DealerCONNECT data.'
+                : 'Add at least one file: the master workbook, a credit memo, a shipper scan or DealerCONNECT data.');
+            return;
+        }
         fd.append('asof', document.getElementById('asof').value);
         fd.append('threshold', document.getElementById('threshold').value);
         fd.append('dealer', document.getElementById('dealer').value);
@@ -404,7 +455,7 @@
         document.getElementById('results').style.display = 'none';
         showProgress('Uploading files…', []);
         try {
-            const resp = await fetch('/api/reconcile', { method: 'POST', body: fd });
+            const resp = await fetch('/api/reconcile', { method: 'POST', body: fd, headers: window.guardHeaders ? window.guardHeaders() : {} });
             const data = await readJson(resp);
             if (!resp.ok) throw new Error(data.error || ('Server error ' + resp.status));
             location.hash = 'job=' + data.job_id;
@@ -522,9 +573,17 @@
                 '<div class="size">' + fmtSize(f.size) + ' ⬇</div></a>';
         });
         h += '</div><p class="note" style="margin-top:12px;margin-bottom:0;">As of ' + esc(r.asof) +
-            (r.dealer ? ' · Dealer ' + esc(r.dealer) : '') + ' · ' + (r.inputs.master_rows || 0) + ' rows in the master you uploaded' +
+            (r.dealer ? ' · Dealer ' + esc(r.dealer) : '') + ' · ' + (r.inputs.master_rows || 0) + ' rows in the master before this run' +
             (r.pages_scanned ? ' · ' + r.pages_scanned + ' shipper pages read' : '') + '</p></div>';
 
+        if (r.saved === true && r.master_held) {
+            h += '<div class="warn"><strong>The master from this run was NOT made your current master</strong> because ' + esc(r.master_held) +
+                '.<br>The run and its files are saved. The saved master is unchanged. If this run\'s master is right, a store admin can make it current under Master versions in <a href="/history" style="color:#8ab4f8;">History</a>.</div>';
+        } else if (r.saved === true && r.from_history) {
+            h += '<div class="ok-box" style="margin-bottom:22px;">A saved run from your store\'s <a href="/history" style="color:#8ab4f8;">History</a>.</div>';
+        } else if (r.saved === true) {
+            h += '<div class="ok-box" style="margin-bottom:22px;">Saved to your store\'s account: the updated master and these files. The next run starts from this master. <a href="/history" style="color:#8ab4f8;">History</a></div>';
+        }
         if (r.warnings && r.warnings.length) {
             h += '<div class="warn"><strong>Check these:</strong><br>' + r.warnings.map(esc).join('<br>') + '</div>';
         }
@@ -698,13 +757,17 @@
         return '<span class="pill ' + c + '">' + esc(s) + '</span>';
     }
     function newRun() {
+        // Signed in: reload, so the form shows the master that was just
+        // saved instead of the workbook picked for the last run.
+        if ({{ 'true' if accounts_on and me else 'false' }}) { location.href = location.pathname; return; }
         history.replaceState(null, '', location.pathname);
         document.getElementById('results').style.display = 'none';
         document.getElementById('formCard').style.display = 'block';
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    function esc(t) { const d = document.createElement('div'); d.textContent = String(t === null || t === undefined ? '' : t); return d.innerHTML; }
+    // Safe in text and inside quoted attributes (file names can hold quotes).
+    function esc(t) { const d = document.createElement('div'); d.textContent = String(t === null || t === undefined ? '' : t); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
     // resume a run after a page refresh (#job=<id>)
     (function resume() {

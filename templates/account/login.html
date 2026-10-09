@@ -1,0 +1,23 @@
+{% extends 'account/base.html' %}
+{% block title %}Sign in — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Sign in</h1>
+    <p>{{ app_name }} — Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+{% if error %}<div class="error-msg" role="alert">{{ error }}</div>{% endif %}
+<div class="card">
+    <form method="post" action="{{ url_for('accounts.login') }}" autocomplete="on">
+        {{ form_guard() }}
+        <input type="hidden" name="next" value="{{ next }}">
+        <label class="title" for="email">Work email</label>
+        <input type="email" id="email" name="email" value="{{ email }}" required autofocus autocomplete="email" inputmode="email" placeholder="you@yourstore.com">
+        <button class="btn-primary wide" type="submit">Email me a sign-in link</button>
+    </form>
+    <p class="note" style="margin:16px 0 0;">There is no password. We email you a link that signs you in. It works once and expires in 20 minutes.</p>
+</div>
+<p class="note" style="text-align:center;"><a class="plain" href="/">Back</a></p>
+{% endblock %}
