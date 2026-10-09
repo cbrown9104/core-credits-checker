@@ -158,6 +158,15 @@ class Reconciler:
         self.page_refs = collections.defaultdict(list)
         self.dc = {}
         self.dealer = (opts.get('dealer') or '').strip() or None
+        # Every ticket exactly as read from the uploaded shipper pages, and
+        # every ticket credited on the uploaded memos. A ticket that is in
+        # the paperwork under its own number is never treated as a misread
+        # of its neighbour (GCRS numbers run in sequence, so real tickets
+        # one digit apart sit next to each other all the time).
+        self.read_on = collections.defaultdict(list)
+        self.read_tickets = set()
+        self.credit_tickets = set()
+        self.parts = PartCorrector([])
 
     # ── step 1 ──────────────────────────────────────────────────────────
     def load_master(self, path, name):
@@ -185,13 +194,24 @@ class Reconciler:
             names.append(name)
             self.progress('ocr', f'Reading shipper scan {name}')
             try:
-                pages.extend(SH.read_shipper_pdf(
+                got = SH.read_shipper_pdf(
                     path, file_label=name,
                     progress=lambda done, total, label:
                     self.progress('ocr', f'OCR {label}: page {done} of '
-                                         f'{total}')))
-            except Exception as e:
-                self.r['warnings'].append(f'{name}: could not read ({e})')
+                                         f'{total}'))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                got = []
+            if not any(pg['lines'] for pg in got):
+                # A memo dropped in the wrong box, a damaged or empty file:
+                # without this the run would quietly show zeros.
+                self.r['warnings'].append(
+                    f'{name}: no control tickets could be read from this '
+                    f'file, so nothing from it was used. Check that it is '
+                    f'the scan of the signed GCRS Dealer Shipper Document '
+                    f'and that it went in the shipper scans box.')
+            pages.extend(got)
         self.r['inputs']['shippers'] = names
         self.r['pages_scanned'] = len(pages)
         self.pages = pages
@@ -204,11 +224,70 @@ class Reconciler:
         self._resolve_lines()
         self._apply_scans()
 
+    def _evidence(self, ln, part, amount):
+        """How a scanned line compares with what is on record for a
+        ticket: (things that agree, things that differ), over the part
+        number and the amount. A blank or unreadable value counts for
+        neither."""
+        same = diff = 0
+        known = clean_key(part)
+        read = clean_key(ln.get('part'))
+        if known and read and part_looks_valid(read):
+            if read == known or self.parts.fix(read)[0] == known:
+                same += 1
+            else:
+                diff += 1
+        if _num(amount) is not None and ln.get('amount') is not None:
+            if _same_amount(amount, ln['amount']):
+                same += 1
+            else:
+                diff += 1
+        return same, diff
+
+    @staticmethod
+    def _others(page, skip):
+        """The tickets on a page as read, leaving one out."""
+        return {clean_key(ln['ticket']) for ln in page['lines']} - {skip}
+
+    def _same_sheet(self, p, t, q, k):
+        """True when pages p and q look like two copies of one shipper
+        page: same shipment, and apart from the two tickets in question
+        (t on p, k on q) they list mostly the same tickets."""
+        if q is p or q.get('shipment') != p.get('shipment'):
+            return False
+        mine, theirs = self._others(p, t), self._others(q, k)
+        if not mine and not theirs:
+            return True
+        return bool(mine and theirs and len(mine & theirs) * 2 >=
+                    min(len(mine), len(theirs)))
+
+    def _could_be(self, t, p, k):
+        """Could ticket t, read on page p, be a misread of ticket k?
+
+        Not when the paperwork shows k under its own number somewhere
+        that is not a second copy of this very page: GCRS numbers run in
+        sequence, so real tickets one digit apart are everywhere. Yes
+        when k is on no uploaded page, or only on another copy of p."""
+        where = self.read_on.get(k, [])
+        if not where:
+            return True
+        if any(q is p for q in where):
+            return False
+        return all(self._same_sheet(p, t, q, k) for q in where)
+
     def _resolve_lines(self):
         by_shp = collections.defaultdict(set)
         for k, rows in self.ledger.index.items():
             if rows[0].get('shipment'):
                 by_shp[rows[0]['shipment']].add(k)
+        self.read_on = collections.defaultdict(list)
+        for p in self.pages:
+            for ln in p['lines']:
+                if not any(q is p for q in self.read_on[clean_key(
+                        ln['ticket'])]):
+                    self.read_on[clean_key(ln['ticket'])].append(p)
+        self.read_tickets = set(self.read_on)
+        # 1. tickets already on the master, and each page's shipment
         for p in self.pages:
             exact = set()
             for ln in p['lines']:
@@ -229,16 +308,37 @@ class Reconciler:
                 p['shipment'] = _plausible_shipment(p['shipment_id'],
                                                     self.asof)
                 p['shipment_source'] = 'scan' if p['shipment'] else None
+        # 2. lines one digit away from a master ticket on the same shipment
+        for p in self.pages:
             same_shp = by_shp.get(p['shipment'], set()) \
                 if p['shipment'] else set()
+            taken = {ln['match'] for ln in p['lines'] if ln['match']}
             for ln in p['lines']:
                 if ln['match']:
                     continue
-                cands = [c for c in self.ledger.near(ln['ticket'])
-                         if c in same_shp and c not in exact]
-                if len(cands) == 1:
-                    ln['match'], ln['how'] = cands[0], 'ocr-fix'
-                    exact.add(cands[0])
+                t = clean_key(ln['ticket'])
+                cands = [c for c in self.ledger.near(t)
+                         if c in same_shp and c not in taken and
+                         self._could_be(t, p, c)]
+                if len(cands) != 1:
+                    continue
+                row = self.ledger.find(cands[0])[0]
+                same, diff = self._evidence(ln, row.get('part'),
+                                            row.get('amount'))
+                if diff:
+                    # the part or amount on the line says it is not that
+                    # ticket: leave it to be added as its own
+                    self.r['ocr_review'].append({
+                        'file': p['file'], 'page': p['page'],
+                        'ticket': ln['ticket'],
+                        'issue': f'Scan read {ln["ticket"]}. The master has '
+                                 f'{cands[0]} on the same shipment, one '
+                                 f'digit different, but with a different '
+                                 f'part or amount, so {ln["ticket"]} was '
+                                 f'kept as its own ticket. Check the page.'})
+                    continue
+                ln['match'], ln['how'] = cands[0], 'ocr-fix'
+                taken.add(cands[0])
             for ln in p['lines']:
                 if ln['match']:
                     self.page_refs[ln['match']].append((p, ln))
@@ -248,9 +348,10 @@ class Reconciler:
         return {ln.get('match') or ln['ticket'] for ln in page['lines']} - \
             {skip}
 
-    def _copy_twin(self, t, page, seen_new, new_page):
+    def _copy_twin(self, t, page, ln, seen_new, new_page):
         """A ticket added from another copy of the same shipper page that
-        differs from t by one digit, or None."""
+        differs from t by one digit, or None. The part and amount on the
+        line must not say it is a different ticket."""
         mine = self._page_tickets(page, t)
         hits = []
         for n in sorted(seen_new):
@@ -259,10 +360,14 @@ class Reconciler:
                     q.get('shipment') != page.get('shipment'):
                 continue
             theirs = self._page_tickets(q, n)
-            if (not mine and not theirs) or (
+            if not ((not mine and not theirs) or (
                     mine and theirs and len(mine & theirs) * 2 >=
-                    min(len(mine), len(theirs))):
-                hits.append(n)
+                    min(len(mine), len(theirs)))):
+                continue
+            row = self.ledger.find(n)[0]
+            if self._evidence(ln, row.get('part'), row.get('amount'))[1]:
+                continue
+            hits.append(n)
         if not hits:
             return None
         # the misread copy is the ticket that is missing from this page
@@ -291,17 +396,41 @@ class Reconciler:
                     continue
                 d = self.dc.get(t)
                 if d is None:
+                    # DealerCONNECT has a ticket one digit away that is on
+                    # no uploaded page under its own number: maybe the scan
+                    # misread it. Believed only when the part or amount on
+                    # the line agrees with DealerCONNECT and neither
+                    # differs; otherwise the ticket stays as read.
                     near_dc = [k for k in self.dc
-                               if hamming1(k, t) and not self.ledger.find(k)]
+                               if hamming1(k, t) and not self.ledger.find(k)
+                               and self._could_be(t, p, k)]
                     if len(near_dc) == 1:
-                        d = self.dc[near_dc[0]]
-                        self.r['ocr_review'].append({
-                            'file': p['file'], 'page': p['page'],
-                            'ticket': d['ticket'],
-                            'issue': f'Scan read {t}; DealerCONNECT has '
-                                     f'{d["ticket"]} — used that.'})
-                        t = d['ticket']
-                        ln['ticket'] = t
+                        cand = self.dc[near_dc[0]]
+                        same, diff = self._evidence(ln, cand.get('part'),
+                                                    cand.get('amount'))
+                        if same and not diff:
+                            d = cand
+                            self.r['ocr_review'].append({
+                                'file': p['file'], 'page': p['page'],
+                                'ticket': d['ticket'],
+                                'issue': f'Scan read {t}; DealerCONNECT has '
+                                         f'{d["ticket"]} with the same part '
+                                         f'and amount — used that.'})
+                            t = d['ticket']
+                            ln['ticket'] = t
+                        elif not diff:
+                            # nothing on the line to tell them apart
+                            self.r['ocr_review'].append({
+                                'file': p['file'], 'page': p['page'],
+                                'ticket': t,
+                                'issue': f'Scan read {t}. DealerCONNECT has '
+                                         f'{cand["ticket"]}, one digit '
+                                         f'different, and the part and '
+                                         f'amount on this line could not be '
+                                         f'read to tell them apart. Kept as '
+                                         f'{t}. If the scan misread it, '
+                                         f'correct the ticket on the '
+                                         f'master.'})
                 if not is_valid_ticket(t):
                     self.r['ocr_review'].append({
                         'file': p['file'], 'page': p['page'], 'ticket': t,
@@ -315,7 +444,7 @@ class Reconciler:
                                  'page — ticket not added. Re-scan the page '
                                  'or add it by hand.'})
                     continue
-                twin = self._copy_twin(t, p, seen_new, new_page)
+                twin = self._copy_twin(t, p, ln, seen_new, new_page)
                 if twin:
                     # the same page was scanned twice and one copy misread
                     # a digit (consecutive tickets on one page are kept)
@@ -331,7 +460,7 @@ class Reconciler:
                     part, fixed = self.parts.fix(ln['part'])
                     if fixed:
                         flags.append(f'part read as {ln["part"]}, matched '
-                                     f'to {part} from your history')
+                                     f'to {part} (a part already on record)')
                 amount = (d or {}).get('amount')
                 if amount is None:
                     amount = ln['amount']
@@ -383,14 +512,26 @@ class Reconciler:
     # ── step 3 ──────────────────────────────────────────────────────────
     def apply_memos(self, files):
         names = []
+        parsed = []
         for path, name in files:
             names.append(name)
             self.progress('memo', f'Reading credit memo {name}')
             try:
                 res = MEMO.parse_memo_pdf(path, source=name)
-            except Exception as e:
-                self.r['warnings'].append(f'{name}: could not read ({e})')
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                self.r['warnings'].append(
+                    f'{name}: could not be read, so no credits from it '
+                    f'were applied. Check that it is the Mopar weekly core '
+                    f'return credit memo PDF.')
                 continue
+            parsed.append((name, res))
+        # every ticket credited in this batch, before any is applied
+        self.credit_tickets = {clean_key(c['ticket'])
+                               for _, res in parsed
+                               for c in res['credits'] if c['ticket']}
+        for name, res in parsed:
             if res.get('dealer') and not self.dealer:
                 self.dealer = res['dealer']
             self.r['warnings'].extend(res['warnings'])
@@ -414,9 +555,20 @@ class Reconciler:
         t = clean_key(c['ticket'])
         rows = self.ledger.find(t)
         if not rows and from_ocr:
+            # A scanned (not text) memo can misread a digit. Snap to an
+            # unpaid master ticket one digit away only when that ticket is
+            # not credited under its own number in this batch and the
+            # amount is the same; and say so.
             cands = [k for k in self.ledger.near(t)
-                     if any(not r['memo'] for r in self.ledger.find(k))]
+                     if k not in self.credit_tickets and any(
+                         not r['memo'] and _same_amount(r.get('amount'),
+                                                        c['amount'])
+                         for r in self.ledger.find(k))]
             if len(cands) == 1:
+                self.r['warnings'].append(
+                    f'Credit memo {c["memo"]} is a scan: ticket read as '
+                    f'{t}, applied to {cands[0]} (one digit different, '
+                    f'same amount, unpaid on the master). Check the memo.')
                 t = cands[0]
                 rows = self.ledger.find(t)
         amount = money_out(c['amount'])
@@ -491,6 +643,13 @@ class Reconciler:
                 rows.extend(DC.read_dc_file(path, source=name))
             except DC.DCError as e:
                 self.r['warnings'].append(str(e))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                self.r['warnings'].append(
+                    f'{name}: could not be opened, so it was left out. If '
+                    f'it is an Excel file, open it in Excel, choose Save As '
+                    f'> Excel Workbook (.xlsx) or CSV, and add it again.')
         if text and text.strip():
             names.append('pasted rows')
             try:
@@ -696,11 +855,12 @@ class Reconciler:
                  '60-89 days' if age < 90 else '90+ days')
             buckets[b][0] += 1
             buckets[b][1] += amt
-            self.r['unpaid'].append({
+            listed = {
                 'shipment': r.get('shipment'), 'ticket': r['ticket'],
                 'part': r.get('part'), 'claim': r.get('claim'),
                 'amount': r.get('amount'), 'age': age,
-                'requested': r.get('requested')})
+                'requested': r.get('requested')}
+            self.r['unpaid'].append(listed)
             if age is None or age < th:
                 continue
             prev = r.get('requested')
@@ -721,6 +881,7 @@ class Reconciler:
                 if refs else ''})
             if self.o.get('mark_requested', True):
                 r['requested'] = today
+                listed['requested'] = today     # as the master now shows
         self.r['aging'] = [{'bucket': k, 'count': v[0],
                             'amount': round(v[1], 2)}
                            for k, v in buckets.items()]
@@ -980,7 +1141,8 @@ def run(inputs, opts, out_dir, progress=None):
     dc_text=str. Returns the result dict (also written to out_dir)."""
     rec = Reconciler(opts, progress)
     progress = rec.progress
-    progress('master', 'Reading the master workbook')
+    progress('master', 'Reading the master workbook' if inputs.get('master')
+             else 'Starting a new master')
     rec.load_master(*(inputs.get('master') or (None, None)))
     rec.load_dc(inputs.get('dc', []), inputs.get('dc_text', ''))
     if inputs.get('shippers'):

@@ -86,8 +86,11 @@ def read_master(path):
     """Return (rows, info). rows keep the workbook order."""
     try:
         wb = load_workbook(path, read_only=True, data_only=False)
-    except Exception as e:
-        raise MasterError(f'Could not open the master workbook: {e}')
+    except Exception:
+        raise MasterError(
+            'The master workbook could not be opened as an Excel file. '
+            'Open it in Excel, choose Save As > Excel Workbook (.xlsx), '
+            'and add it again.')
     ws = None
     if 'Core Returns' in wb.sheetnames:
         ws = wb['Core Returns']
