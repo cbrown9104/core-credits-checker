@@ -12,16 +12,23 @@ Memory-safe for a 512 MB–2 GB instance:
 - One shipper PDF per request
 """
 from flask import (Flask, render_template, request, jsonify, send_file,
-                   abort)
+                   abort, g, redirect, url_for)
 from werkzeug.utils import secure_filename
 import datetime
+import io
 import subprocess
 import re
 import tempfile
 import os
 import gc
 import shutil
+import time
+import uuid
 
+import accounts
+from accounts import db as acct_db
+from accounts import storage as acct_storage
+from accounts import web as acct_web
 from recon import engine as recon_engine
 from recon import jobs as recon_jobs
 from recon.master import MasterError
@@ -29,6 +36,9 @@ from recon.shipper import _shipment_from_header, read_shipper_pdf
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB max upload
+# Store accounts (sign-in, saved master, run history). Inert unless
+# DATABASE_URL is set; without it the app runs open, as it always has.
+accounts.init_app(app)
 
 # Cap OCR pages so a huge scan can't run until OOM/timeout (Starter-safe default)
 MAX_OCR_PAGES = 20
@@ -36,13 +46,18 @@ OCR_DPI = 150  # was 200; lower RAM/time with small accuracy tradeoff
 # Letter at 150 DPI is 1650 px on the long edge. Cap so a bad page box
 # cannot rasterize into a multi-hundred-MB bitmap. Normal scans unchanged.
 OCR_SCALE_TO = 1650
+# Seconds to wait between tries when a finished run cannot be saved because
+# the database is away (about half a minute in all).
+SAVE_RETRY_WAITS = (5, 10, 15)
 
 # ── regex ────────────────────────────────────────────────────────────────
 CTRL_RE = re.compile(r'^([Cc©€6][A-Za-z0-9]\d{7,8})\b')
 AMT_RE = re.compile(r'([\d,]+\.\d{2})\s*$')
 WRAP_RE = re.compile(r'^\s*(\d+)\s+([\d,]+\.\d{2})\s*$')
 CLAIM_RE = re.compile(r'^\d{5,6}$')
-CM_HDR_RE = re.compile(r'CREDIT MEMO NUMBER:\s*03181000(CC\d+)')
+# The memo number is printed after a numeric prefix (03181000CC00203680).
+# Any digits are accepted there, so the prefix does not have to match.
+CM_HDR_RE = re.compile(r'CREDIT MEMO NUMBER:\s*\d*?(CC\d+)')
 CM_REF_RE = re.compile(r'REFERENCE/CONTROL\s+NUMBER\s+(\S+.*)')
 # Optional leading U, 7–9 digits, 1–2 letters. Letter I is never valid;
 # normalize_part_number maps I → 1 before this check.
@@ -432,7 +447,35 @@ def credit_part_numbers(text):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    if not accounts.enabled():
+        return render_template('index.html', active='quick')
+    if not g.user:
+        return render_template('account/landing.html')
+    # Signed in: the site's address opens the weekly run, the same place
+    # sign-in lands. (Someone with no store picked is sent on from there.)
+    return redirect('/reconcile')
+
+
+@app.route('/quick')
+def quick_check():
+    """Quick Check when accounts are on (with them off it is the home
+    page, as it always was)."""
+    if not accounts.enabled():
+        return redirect('/')
+    return render_template('index.html', active='quick')
+
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204, {'Cache-Control': 'public, max-age=86400'}
+
+
+def _account():
+    """(store_id, actor) of the signed-in person, or (None, None) when
+    accounts are off."""
+    if not accounts.enabled():
+        return None, None
+    return g.store['id'], acct_web.actor()
 
 
 @app.route('/api/check-cores', methods=['POST'])
@@ -450,12 +493,13 @@ def check_cores():
             return jsonify(
                 {'error': 'Upload at least one credit memo PDF.'}), 400
 
-        # Free Render: one shipper per request keeps OCR under RAM limits
+        # one shipper per request keeps OCR within the time and memory
+        # a single request has
         if len(shipper_files) > 1:
             return jsonify({
-                'error': 'On the free server, upload only 1 shipper PDF at a '
-                         'time (plus your credit memos), then run again for '
-                         'the next shipper.'
+                'error': 'Quick Check takes 1 shipper PDF at a time (plus '
+                         'your credit memos). Run it again for the next '
+                         'shipper.'
             }), 400
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -484,9 +528,11 @@ def check_cores():
             all_credited = set()
             credit_details = {}
             credit_part_map = {}
+            unread = []         # memo files that gave no credit lines
             for cf in credit_files:
                 p = os.path.join(tmp, _safe(cf.filename))
                 cf.save(p)
+                before = len(all_credited)
                 text = _pdftotext(p)
                 if text and 'CREDIT MEMO NUMBER' in text:
                     creds = parse_credits(text)
@@ -502,8 +548,20 @@ def check_cores():
                 if text:
                     for t, pair in credit_part_numbers(text).items():
                         credit_part_map.setdefault(t, pair)
+                if len(all_credited) == before and not (
+                        text and parse_credits_fallback(text)):
+                    unread.append(os.path.basename(cf.filename))
                 _rm(p)
                 gc.collect()
+            if not all_credited:
+                # Without this every shipped core would be listed as
+                # unclaimed, which is wrong and looks believable.
+                return jsonify({
+                    'error': 'No credit lines could be read from the credit '
+                             'memo PDF(s), so nothing can be compared. '
+                             'Check that they are the Mopar weekly core '
+                             'return credit memos.'
+                }), 400
 
         unclaimed, claimed = [], []
         for item in all_items:
@@ -530,18 +588,27 @@ def check_cores():
         unclaimed.sort(key=lambda x: (x.get('shipper_date') or '9999',
                                       x.get('control', '')))
 
-        return jsonify({
-            'success': True,
-            'ocr_used': ocr_used,
+        summary = {
             'shipper_count': len(all_items),
             'credited_count': len(claimed),
             'unclaimed_count': len(unclaimed),
             'shipper_total': _sum(all_items),
             'credited_total': _sum(claimed),
             'unclaimed_total': _sum(unclaimed),
-            'credit_tickets': len(all_credited),
-            'results': unclaimed,
-        })
+        }
+        store_id, actor = _account()
+        if store_id:
+            try:    # the history line is a nice-to-have, never a blocker
+                acct_storage.log_quick_check(uuid.uuid4().hex, store_id,
+                                             actor, summary)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+
+        return jsonify(dict(
+            summary, success=True, ocr_used=ocr_used,
+            credit_tickets=len(all_credited), results=unclaimed,
+            unread_credit_files=unread))
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -551,7 +618,10 @@ def check_cores():
 # ── Full Reconciliation ────────────────────────────────────────────────
 @app.route('/reconcile')
 def reconcile_page():
-    return render_template('reconcile.html')
+    store_id, _ = _account()
+    saved = acct_storage.current_master(store_id) if store_id else None
+    return render_template('reconcile.html', active='reconcile',
+                           saved_master=saved)
 
 
 def _today_central():
@@ -586,10 +656,48 @@ def _save_uploads(files, folder, allowed, label):
     return saved
 
 
+AWAY = ('The site could not reach its saved records, so this run did not '
+        'finish. Nothing was changed. Run it again in a minute.')
+UNEXPECTED = ('The run stopped on something unexpected. Nothing was changed. '
+              'Run it again. If it stops again, tell us which files you '
+              'used.')
+
+
+def _when_back(fn):
+    """Call fn, waiting out a short database outage (about half a minute
+    in all). Only "could not reach it" is retried: that is raised before
+    anything is sent, so nothing is ever applied twice."""
+    for wait in SAVE_RETRY_WAITS + (None,):
+        try:
+            return fn()
+        except acct_db.Unavailable:
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
 @app.route('/api/reconcile', methods=['POST'])
 def api_reconcile():
     recon_jobs.cleanup()
-    job_id, d = recon_jobs.new_job()
+    store_id, actor = _account()
+    # Looked up before anything is created, so a database hiccup here
+    # leaves no half-made job behind.
+    saved_now = acct_storage.current_master(store_id) if store_id else None
+    admin = bool(store_id) and acct_web.is_admin()
+    job_id, d = recon_jobs.new_job(
+        meta={'store_id': store_id} if store_id else None)
+    started = []
+    try:
+        return _submit_run(job_id, d, store_id, actor, saved_now, admin,
+                           started)
+    finally:
+        # Whatever stopped it before the run began (files too large to
+        # accept, a full disk, a refusal below), no job is left waiting.
+        if not started:
+            recon_jobs.discard(job_id)
+
+
+def _submit_run(job_id, d, store_id, actor, saved_now, admin, started):
     inbox = os.path.join(d, 'in')
     try:
         master = _save_uploads([request.files.get('master')], inbox,
@@ -602,11 +710,15 @@ def api_reconcile():
                            {'.csv', '.txt', '.xlsx', '.xlsm', '.xls'},
                            'DealerCONNECT files')
     except ValueError as e:
-        shutil.rmtree(d, ignore_errors=True)
         return jsonify({'error': str(e)}), 400
+    if store_id and master and not admin and saved_now:
+        # Swapping the store's saved master for another workbook is an
+        # admin's call; everyone else runs from the saved one.
+        return jsonify({'error': 'Only a store admin can replace the '
+                                 'saved master. Run without a workbook to '
+                                 'use the saved one.'}), 403
     dc_text = request.form.get('dc_text', '')
     if not (master or memos or shippers or dc or dc_text.strip()):
-        shutil.rmtree(d, ignore_errors=True)
         return jsonify({'error': 'Add at least one file: the master '
                                  'workbook, a credit memo, a shipper scan '
                                  'or DealerCONNECT data.'}), 400
@@ -620,6 +732,8 @@ def api_reconcile():
     except ValueError:
         threshold = 60
     dealer = re.sub(r'\D', '', request.form.get('dealer', ''))[:8]
+    if store_id and not dealer:
+        dealer = g.store.get('dealer_code') or ''
     opts = {
         'asof': asof, 'threshold': threshold, 'dealer': dealer,
         'mark_requested': _flag('mark_requested', True),
@@ -629,32 +743,160 @@ def api_reconcile():
     inputs = {'master': master[0] if master else None, 'memos': memos,
               'shippers': shippers, 'dc': dc, 'dc_text': dc_text}
     out_dir = os.path.join(d, 'out')
+    state = {'master_in': None}
+    replacing = bool(store_id and master and saved_now)
+    # The saved master this person was looking at when they pressed Run.
+    # If a different one is current by the time the run saves, the run's
+    # master is held for an admin instead of silently taking its place.
+    seen_master = saved_now['id'] if saved_now else None
 
     def work(progress):
+        # With accounts on and no workbook uploaded, the run starts from
+        # the store's saved master. It is read here, when the run actually
+        # starts (runs go one at a time), so two runs in a row never both
+        # start from the same old copy.
+        if replacing:
+            try:    # this workbook is about to replace a saved master
+                acct_storage.check_master_upload(inputs['master'][0])
+            except acct_storage.NotAMaster as e:
+                raise RuntimeError(str(e))
+        if store_id and inputs['master'] is None:
+            try:
+                row, content = _when_back(
+                    lambda: acct_storage.master_file(store_id))
+            except acct_web.DB_ERRORS:
+                import traceback
+                traceback.print_exc()
+                raise RuntimeError(AWAY)
+            if row:
+                os.makedirs(inbox, exist_ok=True)
+                name = secure_filename(row['filename']) or \
+                    'Core_Returns_RECONCILED.xlsx'
+                path = os.path.join(inbox, 'saved_' + name)
+                with open(path, 'wb') as fh:
+                    fh.write(content)
+                inputs['master'] = (path, row['filename'])
+                state['master_in'] = row['id']
         try:
             return recon_engine.run(inputs, opts, out_dir, progress)
         except MasterError as e:
             raise RuntimeError(str(e))
+        except Exception as e:
+            # the detail goes to the server log, not to the page
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f'{UNEXPECTED} ({e.__class__.__name__})')
 
-    recon_jobs.start(job_id, work)
+    if not store_id:
+        started.append(True)
+        recon_jobs.start(job_id, work)
+        return jsonify({'job_id': job_id})
+
+    def on_done(jid, result, out):
+        # A run can take minutes. If the database happens to be away at
+        # the moment it ends, wait for it rather than lose the save.
+        saved = _when_back(lambda: acct_storage.finish_run(
+            jid, store_id, actor, result, out,
+            master_in=state['master_in'], may_replace=admin,
+            seen_master=seen_master))
+        return {'saved': True, 'master_held': saved['held']}
+
+    def on_error(jid, message):
+        if message == recon_jobs.NOT_SAVED:
+            # the save has just waited out its half minute: one try
+            acct_storage.fail_run(jid, message)
+        else:
+            _when_back(lambda: acct_storage.fail_run(jid, message))
+
+    try:
+        acct_storage.begin_run(
+            job_id, store_id, actor, 'reconcile', asof=asof,
+            options=dict(opts, asof=asof.isoformat(),
+                         uploaded_master=bool(master)))
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Could not reach your store\'s account '
+                                 'just now. Nothing was started. Try again '
+                                 'in a minute.'}), 503
+    started.append(True)
+    recon_jobs.start(job_id, work, on_done=on_done, on_error=on_error)
     return jsonify({'job_id': job_id})
+
+
+def _saved_run(job_id):
+    """A run from this store's history, shaped like a live job."""
+    if not recon_jobs.JOB_ID_RE.match(job_id or ''):
+        return None
+    run = acct_storage.get_run(job_id, g.store['id'])
+    if not run or run['kind'] != 'reconcile':
+        return None
+    status, error = run['status'], run['error']
+    if status == 'running':
+        # not in this server's memory any more: it restarted mid-run
+        status, error = 'error', acct_storage.INTERRUPTED
+    result = run['result']
+    if result is not None:
+        result = dict(result, from_history=True)
+    return {'id': run['id'], 'status': status, 'error': error,
+            'message': 'Done' if status == 'done' else 'Stopped',
+            'log': [], 'elapsed': 0, 'result': result}
 
 
 @app.route('/api/jobs/<job_id>')
 def api_job(job_id):
+    gone = (jsonify({'error': 'That run has expired or does not '
+                              'exist. Start a new run.'}), 404)
     job = recon_jobs.get(job_id)
-    if not job:
-        return jsonify({'error': 'That run has expired or does not '
-                                 'exist. Start a new run.'}), 404
-    return jsonify(job)
+    if not accounts.enabled():
+        return jsonify(job) if job else gone
+    # A run belongs to one store. Anyone else gets "does not exist".
+    if job:
+        owner = recon_jobs.meta(job_id)
+        if not owner or owner.get('store_id') != g.store['id']:
+            mine = next((s for s in g.stores if owner and
+                         s['id'] == owner.get('store_id')), None)
+            if mine:
+                # their own run, in a store they switched away from
+                return jsonify({'error': (
+                    f'This run is in {mine["name"]}, which is not the '
+                    f'store open now. It keeps going and will be in that '
+                    f'store\'s History.')}), 409
+            return gone
+        return jsonify(job)
+    saved = _saved_run(job_id)
+    return jsonify(saved) if saved else gone
 
 
 @app.route('/api/jobs/<job_id>/files/<path:name>')
 def api_job_file(job_id, name):
-    path = recon_jobs.output_path(job_id, name)
-    if not path:
+    if not accounts.enabled():
+        path = recon_jobs.output_path(job_id, name)
+        if not path:
+            abort(404)
+        return send_file(path, as_attachment=True, download_name=name)
+    owner = recon_jobs.meta(job_id)
+    if owner is not None:
+        if owner.get('store_id') != g.store['id']:
+            abort(404)
+        path = recon_jobs.output_path(job_id, name)
+        if path:
+            return send_file(path, as_attachment=True, download_name=name)
+    # not on this server any more (or never was): the store's history
+    saved = _saved_run(job_id)
+    if not saved or saved['status'] != 'done':
         abort(404)
-    return send_file(path, as_attachment=True, download_name=name)
+    listed = {f['name']: f for f in (saved['result'] or {}).get('files', [])}
+    if name not in listed:
+        abort(404)
+    if listed[name].get('kind') == 'zip':
+        content = acct_storage.run_zip(job_id)
+    else:
+        content = acct_storage.run_file(job_id, name)
+    if content is None:
+        abort(404)
+    return send_file(io.BytesIO(content), as_attachment=True,
+                     download_name=name)
 
 
 def _safe(fn):

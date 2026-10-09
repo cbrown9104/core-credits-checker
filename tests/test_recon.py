@@ -309,6 +309,279 @@ class TestScanDedupe(unittest.TestCase):
         self.assertIn('C412200213', rec.r['ocr_review'][0]['issue'])
 
 
+def scan_line(ticket, part='11111111AA', amount=50.0, y=0):
+    return {'ticket': ticket, 'ticket_raw': ticket, 'ticket_fixed': False,
+            'claim': None, 'part': part, 'part_ok': True,
+            'description': 'X', 'qty': 1, 'amount': amount,
+            'box': (10, y, 20, y + 10), 'line_box': (0, y, 1, y + 10),
+            'conf': 90}
+
+
+def scan_page(name, number, shipment, lines):
+    for y, ln in enumerate(lines):
+        ln['box'] = (10, 100 * y, 20, 100 * y + 10)
+    return {'file': name, 'path': name, 'page': number, 'width': 1700,
+            'height': 2200, 'dpi': 200, 'shipment_id': shipment,
+            'dealer': None, 'lines': lines, 'checkoff_x': None,
+            'printed_total': None}
+
+
+class TestMisreadRules(unittest.TestCase):
+    """GCRS control tickets run in sequence, so real tickets one digit
+    apart sit next to each other on a page. A line is only ever treated
+    as a misread of a neighbouring ticket when the paperwork does not show
+    that neighbour under its own number and the part and amount agree."""
+
+    SHP = '2026-07-01 17:00.01'
+
+    def rec(self, master_rows=(), dc_text=''):
+        from recon.dealerconnect import merge
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rec = engine.Reconciler({'asof': datetime.date(2026, 10, 5),
+                                 'threshold': 60})
+        if master_rows:
+            path = os.path.join(tmp, 'm.xlsx')
+            make_master(path, [dict(r) for r in master_rows])
+            rec.load_master(path, 'm.xlsx')
+        else:
+            rec.load_master(None, None)
+        rec.load_dc([], dc_text)
+        self.assertEqual(rec.dc, merge(rec.dc_rows))
+        return rec
+
+    def scan(self, rec, pages):
+        rec.pages = pages
+        rec.parts = engine.PartCorrector(
+            [r.get('part') for r in rec.ledger.rows] +
+            [d['part'] for d in rec.dc.values() if d.get('part')])
+        rec._resolve_lines()
+        rec._apply_scans()
+        return [x['ticket'] for x in rec.r['new_shipments']]
+
+    def test_a_neighbour_on_dealerconnect_never_replaces_a_ticket(self):
+        # five tickets in a row on one page; Mopar's unpaid list has only
+        # the second (the first is already paid)
+        rec = self.rec(dc_text='C418800202\t22222222AB\t\t125.00\t\t\t')
+        lines = [scan_line('C418800201', '11111111AA', 125.0),
+                 scan_line('C418800202', '22222222AB', 125.0),
+                 scan_line('C418800203', '33333333AC', 60.0),
+                 scan_line('C418800204', '44444444AD', 75.0),
+                 scan_line('C418800205', '55555555AE', 90.0)]
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, lines)])
+        self.assertEqual(added, ['C418800201', 'C418800202', 'C418800203',
+                                 'C418800204', 'C418800205'])
+        self.assertEqual(rec.r['ocr_review'], [])
+        by = {x['ticket']: x for x in rec.r['new_shipments']}
+        self.assertEqual(by['C418800201']['source'], 'scan')
+        self.assertEqual(by['C418800202']['source'], 'DealerCONNECT')
+        # each ticket points at its own line (where "UnPaid" is stamped)
+        for i, t in enumerate(added):
+            page, ln = rec.page_refs[t][0]
+            self.assertEqual(ln['box'][1], 100 * i, t)
+        # ... also when the DealerCONNECT ticket is on the next page
+        rec = self.rec(dc_text='C418800202\t22222222AB\t\t125.00\t\t\t')
+        added = self.scan(rec, [
+            scan_page('a.pdf', 1, self.SHP,
+                      [scan_line('C418800150', '99999999AA', 10.0),
+                       scan_line('C418800201', '11111111AA', 125.0)]),
+            scan_page('a.pdf', 2, self.SHP,
+                      [scan_line('C418800202', '22222222AB', 125.0),
+                       scan_line('C418800203', '33333333AC', 60.0)])])
+        self.assertEqual(added, ['C418800150', 'C418800201', 'C418800202',
+                                 'C418800203'])
+
+    def test_a_real_misread_is_still_fixed_from_dealerconnect(self):
+        # ...207 scanned as ...287; DealerCONNECT has ...207 with the same
+        # part and amount, and it is on no page under its own number
+        rec = self.rec(dc_text='C418800207\t22222222AB\t\t125.00\t\t\t')
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800201', '11111111AA', 50.0),
+            scan_line('C418800287', '22222222AB', 125.0)])])
+        self.assertEqual(added, ['C418800201', 'C418800207'])
+        # (...201 is one digit from ...207 too, but its part and amount
+        # are different, so it is left alone without comment)
+        self.assertEqual(len(rec.r['ocr_review']), 1)
+        self.assertIn('C418800207', rec.r['ocr_review'][0]['issue'])
+        self.assertIn('used that', rec.r['ocr_review'][0]['issue'])
+
+    def test_a_neighbour_with_another_part_or_amount_is_another_ticket(self):
+        # DealerCONNECT's ...202 is on no uploaded page, but the line that
+        # reads ...201 shows a different part and amount: it is ...201
+        rec = self.rec(dc_text='C418800202\t22222222AB\t\t125.00\t\t\t')
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800201', '11111111AA', 50.0)])])
+        self.assertEqual(added, ['C418800201'])
+        self.assertEqual(rec.ledger.find('C418800202'), [])
+        self.assertEqual(rec.r['ocr_review'], [])
+        # the same part with a different amount is not enough either
+        rec = self.rec(dc_text='C418800202\t11111111AA\t\t125.00\t\t\t')
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800201', '11111111AA', 50.0)])])
+        self.assertEqual(added, ['C418800201'])
+        self.assertEqual(rec.r['ocr_review'], [])
+        # nothing readable on the line to compare: kept as read, and said
+        rec = self.rec(dc_text='C418800202\t22222222AB\t\t125.00\t\t\t')
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800201', '', None)])])
+        self.assertEqual(added, ['C418800201'])
+        note = rec.r['ocr_review'][0]
+        self.assertEqual(note['ticket'], 'C418800201')
+        self.assertIn('Kept as C418800201', note['issue'])
+
+    def test_master_neighbour_on_another_page_is_not_a_misread(self):
+        master = [row(None, self.SHP, 'C418800202', '22222222AB', 125)]
+        rec = self.rec(master)
+        added = self.scan(rec, [
+            scan_page('a.pdf', 1, self.SHP,
+                      [scan_line('C418800150', '99999999AA', 10.0),
+                       scan_line('C418800201', '22222222AB', 125.0)]),
+            scan_page('a.pdf', 2, self.SHP,
+                      [scan_line('C418800202', '22222222AB', 125.0),
+                       scan_line('C418800203', '33333333AC', 60.0)])])
+        # ...201 is its own ticket even with the same part and amount,
+        # because ...202 is right there on page 2
+        self.assertEqual(added, ['C418800150', 'C418800201', 'C418800203'])
+        self.assertEqual(rec.r['ocr_review'], [])
+        self.assertEqual(len(rec.page_refs['C418800202']), 1)
+
+    def test_master_neighbour_is_matched_only_when_the_line_agrees(self):
+        master = [row(None, self.SHP, 'C418800202', '22222222AB', 125),
+                  row(None, self.SHP, 'C418800150', '99999999AA', 10)]
+        # agrees (same part and amount), and ...202 is on no page: misread
+        rec = self.rec(master)
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800150', '99999999AA', 10.0),
+            scan_line('C418800282', '22222222AB', 125.0)])])
+        self.assertEqual(added, [])
+        self.assertIn('matched to C418800202',
+                      rec.r['ocr_review'][0]['issue'])
+        self.assertEqual(len(rec.page_refs['C418800202']), 1)
+        # a different amount: kept as its own ticket, and flagged
+        rec = self.rec(master)
+        added = self.scan(rec, [scan_page('a.pdf', 1, self.SHP, [
+            scan_line('C418800150', '99999999AA', 10.0),
+            scan_line('C418800201', '22222222AB', 60.0)])])
+        self.assertEqual(added, ['C418800201'])
+        self.assertIn('kept as its own ticket',
+                      rec.r['ocr_review'][0]['issue'])
+        self.assertEqual(rec.page_refs.get('C418800202', []), [])
+
+    def test_second_copy_of_a_page_with_a_misread_adds_nothing(self):
+        s1 = '2026-10-01 17:00.01'
+        master = [row(None, s1, t, '11111111AA', 50) for t in
+                  ('C412200212', 'C412200213', 'C412200300')]
+        rec = self.rec(master)
+        added = self.scan(rec, [
+            scan_page('a.pdf', 1, s1, [scan_line(t) for t in (
+                'C412200212', 'C412200213', 'C412200300')]),
+            scan_page('b.pdf', 1, s1, [scan_line(t) for t in (
+                'C412200212', 'C412200218', 'C412200300')])])
+        self.assertEqual(added, [])                 # ...218 is ...213
+        self.assertEqual(len(rec.page_refs['C412200213']), 2)
+        # the same with new tickets that DealerCONNECT knows, misread
+        # copy first
+        dc = '\n'.join(f'{t}\t11111111AA\t\t50.00\t\t\t' for t in (
+            'C412200212', 'C412200213', 'C412200300'))
+        rec = self.rec(dc_text=dc)
+        added = self.scan(rec, [
+            scan_page('b.pdf', 1, s1, [scan_line(t) for t in (
+                'C412200212', 'C412200218', 'C412200300')]),
+            scan_page('a.pdf', 1, s1, [scan_line(t) for t in (
+                'C412200212', 'C412200213', 'C412200300')])])
+        self.assertEqual(added, ['C412200212', 'C412200213', 'C412200300'])
+
+    def test_scanned_memo_credit_goes_to_a_neighbour_only_when_sure(self):
+        def credit(ticket, amount, memo='CC00900009'):
+            return {'ticket': ticket, 'memo': memo,
+                    'memo_date': datetime.date(2026, 10, 3),
+                    'part': None, 'claim': None, 'amount': amount}
+        master = [row(None, self.SHP, 'C418800202', '22222222AB', 125)]
+        # same amount, and ...202 has no credit of its own: applied, said
+        rec = self.rec(master)
+        rec._apply_credit(credit('C418800282', 125.0), True)
+        self.assertEqual(rec.ledger.find('C418800202')[0]['memo'],
+                         'CC00900009')
+        self.assertIn('applied to C418800202', rec.r['warnings'][0])
+        # a different amount: its own (unmatched) credit, ...202 stays open
+        rec = self.rec(master)
+        rec._apply_credit(credit('C418800201', 60.0), True)
+        self.assertIsNone(rec.ledger.find('C418800202')[0]['memo'])
+        self.assertEqual(len(rec.r['unmatched_credits']), 1)
+        # ...202 is credited in the same batch: ...201 is not a misread
+        rec = self.rec(master)
+        rec.credit_tickets = {'C418800201', 'C418800202'}
+        rec._apply_credit(credit('C418800201', 125.0), True)
+        rec._apply_credit(credit('C418800202', 125.0, 'CC00900010'), True)
+        self.assertEqual(rec.ledger.find('C418800202')[0]['memo'],
+                         'CC00900010')
+        self.assertEqual(rec.ledger.find('C418800201')[0]['memo'],
+                         'CC00900009')
+
+    def test_a_request_made_in_this_run_shows_on_the_unpaid_list(self):
+        rec = self.rec([row(None, self.SHP, 'C418800202', '22222222AB',
+                            125)])
+        rec.pages = []
+        rec.build_request()
+        self.assertEqual(rec.r['unpaid'][0]['requested'], '2026-10-05')
+        rec = self.rec([row(None, self.SHP, 'C418800202', '22222222AB',
+                            125)])
+        rec.o['mark_requested'] = False
+        rec.pages = []
+        rec.build_request()
+        self.assertIsNone(rec.r['unpaid'][0]['requested'])
+
+
+class TestFilesThatGiveNothing(unittest.TestCase):
+    """A file in the wrong box, or one that cannot be read, is called out
+    instead of quietly producing zeros."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def run_engine(self, **inputs):
+        base = {'master': None, 'memos': [], 'shippers': [], 'dc': [],
+                'dc_text': ''}
+        base.update(inputs)
+        out = os.path.join(self.tmp, 'out')
+        os.makedirs(out, exist_ok=True)
+        return engine.run(base, {'asof': datetime.date(2026, 10, 5),
+                                 'threshold': 60}, out)
+
+    def write(self, name, data):
+        path = os.path.join(self.tmp, name)
+        with open(path, 'wb') as fh:
+            fh.write(data)
+        return path, name
+
+    def test_shipper_file_with_no_tickets_is_called_out(self):
+        for name, data in (('empty.pdf', b''),
+                           ('broken.pdf', b'%PDF-1.4 this is not a pdf'),
+                           ('letter.pdf', b'PK\x03\x04 a word file')):
+            res = self.run_engine(shippers=[self.write(name, data)])
+            warn = [w for w in res['warnings'] if w.startswith(name)]
+            self.assertEqual(len(warn), 1, res['warnings'])
+            self.assertIn('no control tickets could be read', warn[0])
+            self.assertNotIn('Traceback', warn[0])
+
+    def test_dealerconnect_file_that_is_not_excel_is_left_out(self):
+        res = self.run_engine(
+            dc=[self.write('unpaid.xlsx', b'')],
+            dc_text='C400000001\t11111111AA\t\t50.00\t\t\t')
+        warn = [w for w in res['warnings'] if w.startswith('unpaid.xlsx')]
+        self.assertEqual(len(warn), 1, res['warnings'])
+        self.assertIn('could not be opened', warn[0])
+        # the pasted rows were still used
+        self.assertEqual(res['inputs']['dealerconnect'],
+                         ['unpaid.xlsx', 'pasted rows'])
+
+    def test_memo_that_cannot_be_read_is_called_out(self):
+        res = self.run_engine(memos=[self.write('memo.pdf', b'')])
+        self.assertTrue(any(w.startswith('memo.pdf') for w in
+                            res['warnings']), res['warnings'])
+
+
 class TestMasterWorkbook(unittest.TestCase):
     def test_round_trip_and_layout(self):
         tmp = tempfile.mkdtemp()

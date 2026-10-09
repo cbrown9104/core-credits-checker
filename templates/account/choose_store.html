@@ -1,0 +1,30 @@
+{% extends 'account/base.html' %}
+{% block title %}Pick a store — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Pick a store</h1>
+    <p>{{ me.email }} is on more than one store</p>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card">
+    <p class="note">Everything you upload and run is saved to the store you pick. Check the name and dealer code.</p>
+    {% for s in my_stores %}
+    <form method="post" action="{{ url_for('accounts.switch_store') }}" style="margin-bottom:12px;">
+        {{ form_guard() }}
+        <input type="hidden" name="store_id" value="{{ s.id }}">
+        <input type="hidden" name="next" value="{{ next }}">
+        <button class="btn-primary wide" type="submit" style="margin-top:0;text-align:left;">
+            {{ s.name }}{% if s.dealer_code %} &middot; Dealer {{ s.dealer_code }}{% endif %}
+        </button>
+        <p class="note" style="margin:6px 2px 0;font-size:12px;">You were added{% if s.added_email %} by {{ s.added_email }}{% endif %} on {{ s.added_at|central }}.</p>
+    </form>
+    {% endfor %}
+    {% if me.is_owner %}<p class="note"><a class="plain" href="{{ url_for('accounts.owner') }}">All stores</a></p>{% endif %}
+    <form method="post" action="/logout" style="margin-top:8px;">
+        {{ form_guard() }}
+        <button class="btn-small" type="submit">Sign out</button>
+    </form>
+</div>
+{% endblock %}

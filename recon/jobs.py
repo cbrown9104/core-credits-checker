@@ -22,13 +22,20 @@ JOB_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 _lock = threading.Lock()
 _one_at_a_time = threading.Semaphore(1)
 _jobs = {}
+# Who a job belongs to (store, user). Kept apart from the job itself so it
+# is never sent to the browser with the job's status.
+_meta = {}
+
+NOT_SAVED = ('This run finished, but it could not be saved to your account. '
+             'Download the files below now and keep the master. Then run it '
+             'again later or contact support.')
 
 
 def job_dir(job_id):
     return os.path.join(JOB_ROOT, job_id)
 
 
-def new_job():
+def new_job(meta=None):
     job_id = uuid.uuid4().hex
     d = job_dir(job_id)
     os.makedirs(os.path.join(d, 'in'), exist_ok=True)
@@ -39,7 +46,24 @@ def new_job():
             'started': None, 'finished': None, 'message': 'Waiting to start',
             'log': [], 'result': None, 'error': None,
         }
+        if meta is not None:
+            _meta[job_id] = dict(meta)
     return job_id, d
+
+
+def discard(job_id):
+    """Forget a job that never started, with its folder."""
+    with _lock:
+        _jobs.pop(job_id, None)
+        _meta.pop(job_id, None)
+    shutil.rmtree(job_dir(job_id), ignore_errors=True)
+
+
+def meta(job_id):
+    """Who the job belongs to, or None (also None when accounts are off)."""
+    with _lock:
+        m = _meta.get(job_id)
+        return dict(m) if m is not None else None
 
 
 def _update(job_id, **kw):
@@ -62,28 +86,66 @@ def _progress(job_id):
     return cb
 
 
-def start(job_id, work):
-    t = threading.Thread(target=_run, args=(job_id, work), daemon=True)
+def start(job_id, work, on_done=None, on_error=None):
+    """Run work(progress) on a worker thread.
+
+    on_done(job_id, result, out_dir) is called after a successful run,
+    while the result files still exist; whatever dict it returns is merged
+    into the result. on_error(job_id, message) is called when the run
+    stops. Both are optional (they save the run to the store's account).
+    """
+    t = threading.Thread(target=_run, args=(job_id, work, on_done, on_error),
+                         daemon=True)
     t.start()
 
 
-def _run(job_id, work):
+def _run(job_id, work, on_done=None, on_error=None):
     with _one_at_a_time:
         _update(job_id, status='running', started=time.time(),
                 message='Starting')
         try:
             result = work(_progress(job_id))
             safe = json.loads(json.dumps(result, default=str))
+            if on_done is not None:
+                _update(job_id, message='Saving to your account')
+                try:
+                    extra = on_done(job_id, safe,
+                                    os.path.join(job_dir(job_id), 'out'))
+                    if extra:
+                        safe.update(extra)
+                except Exception:   # the run itself is still good
+                    traceback.print_exc()
+                    safe['saved'] = False
+                    safe.setdefault('warnings', []).insert(0, NOT_SAVED)
+                    if on_error is not None:
+                        try:    # so the history does not show it running
+                            on_error(job_id, NOT_SAVED)
+                        except Exception:
+                            traceback.print_exc()
             _update(job_id, status='done', finished=time.time(),
                     result=safe, message='Done')
         except Exception as e:  # report, never crash the worker
             traceback.print_exc()
+            message = str(e) or e.__class__.__name__
+            # Recorded on the account first, so the moment the page shows
+            # the run as stopped, the history already agrees.
+            if on_error is not None:
+                try:
+                    on_error(job_id, message)
+                except Exception:
+                    traceback.print_exc()
             _update(job_id, status='error', finished=time.time(),
-                    error=str(e) or e.__class__.__name__,
-                    message='Stopped with an error')
+                    error=message, message='Stopped with an error')
         finally:
             shutil.rmtree(os.path.join(job_dir(job_id), 'in'),
                           ignore_errors=True)
+
+
+def is_live(job_id):
+    """True while the job is waiting or working in this server."""
+    with _lock:
+        job = _jobs.get(job_id)
+        return bool(job) and job['status'] in ('queued', 'running')
 
 
 def get(job_id):
@@ -126,6 +188,7 @@ def cleanup():
                  now - (j['finished'] or j['created']) > KEEP_SECONDS]
         for k in stale:
             _jobs.pop(k, None)
+            _meta.pop(k, None)
     for k in stale:
         shutil.rmtree(job_dir(k), ignore_errors=True)
     # leftovers from a previous process (server restart)

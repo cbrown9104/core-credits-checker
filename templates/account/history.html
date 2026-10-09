@@ -1,0 +1,105 @@
+{% extends 'account/base.html' %}
+{% block title %}History — {{ store.name }}{% endblock %}
+{% block subtitle %}Saved master and every run for {{ store.name }}{% endblock %}
+{% block head %}
+<style>
+    /* the Open button stays in view: the message wraps instead of pushing it off the side */
+    td.why { white-space: normal; line-height: 1.5; min-width: 260px; }
+    td.act { white-space: normal; }
+    td.act .pill { white-space: nowrap; margin-top: 4px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>Saved master</h2>
+    {% if master %}
+    <div class="facts">
+        <div class="fact"><div class="n">{{ '{:,}'.format(master.row_count) }}</div><div class="l">Rows</div></div>
+        <div class="fact"><div class="n">{{ master.unpaid_count if master.unpaid_count is not none else '' }}</div><div class="l">Unpaid tickets</div></div>
+        <div class="fact"><div class="n">{{ master.unpaid_amount|money }}</div><div class="l">Unpaid total</div></div>
+    </div>
+    <p class="note">Last saved {{ master.created_at|central }}{% if master.created_email %} by {{ master.created_email }}{% endif %}. The next run starts from this master and saves the updated one back here.</p>
+    <a class="btn-primary" href="{{ url_for('accounts.master_download') }}">Download {{ master.filename }}</a>
+    {% else %}
+    <p class="note" style="margin-bottom:0;">No master is saved yet. On <a class="plain" href="/reconcile">Full Reconciliation</a>, drop in your Core_Returns_RECONCILED.xlsx (or leave it empty to start a new one) and run. The result is saved here.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>Runs</h2>
+    {% if runs %}
+    <div class="table-wrap">
+        <table>
+            <thead><tr>
+                <th>When</th><th>Who</th><th>As of</th>
+                <th class="num">Credits applied</th><th class="num">New shipments</th>
+                <th class="num">Still unpaid</th><th class="num">Credit request</th><th></th>
+            </tr></thead>
+            <tbody>
+            {% for r in runs %}
+            {% set s = r.summary or {} %}
+            <tr>
+                <td class="nowrap">{{ r.created_at|central }}</td>
+                <td title="{{ r.user_email }}">{{ r.user_email.split('@')[0] }}</td>
+                {% if r.kind == 'quick' %}
+                <td><span class="pill blue">Quick Check</span></td>
+                <td class="num" colspan="2">{{ s.get('credited_count', '') }} credited of {{ s.get('shipper_count', '') }} shipped</td>
+                <td class="num">{{ s.get('unclaimed_count', '') }} &middot; {{ s.get('unclaimed_total')|money }}</td>
+                <td></td><td></td>
+                {% elif r.status == 'done' %}
+                <td class="nowrap">{{ r.asof or '' }}</td>
+                <td class="num">{{ s.get('matched', 0) }} &middot; {{ s.get('matched_amount')|money }}</td>
+                <td class="num">{{ s.get('new_shipments', 0) }}</td>
+                <td class="num">{{ s.get('unpaid', 0) }} &middot; {{ s.get('unpaid_amount')|money }}</td>
+                <td class="num">{{ s.get('credit_request', 0) }} &middot; {{ s.get('request_amount')|money }}</td>
+                <td class="act">{% if r.file_count %}<a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a>{% else %}<span class="pill blue">Files not kept</span>{% endif %}{% if s.get('master_held') %} <span class="pill amber" title="Its master was not made current because {{ s.get('master_held') }}">Master held</span>{% endif %}</td>
+                {% elif r.status == 'error' %}
+                <td class="nowrap">{{ r.asof or '' }}</td>
+                <td colspan="5" class="why"><span class="pill red">Stopped</span> {{ r.error or 'The run stopped with an error.' }}</td>
+                {% else %}
+                <td class="nowrap">{{ r.asof or '' }}</td>
+                <td colspan="4"><span class="pill amber">Running</span> In progress</td>
+                <td class="act"><a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a></td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="note" style="margin-bottom:0;">No runs yet.</p>
+    {% endif %}
+</div>
+
+{% if versions|length > 1 or (versions and not master) %}
+<div class="card">
+    <h2>Master versions</h2>
+    <p class="note">Every run saves a new version. If a run went wrong (wrong file, wrong date), an admin can put an earlier version back. Nothing is deleted when you do.</p>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Saved</th><th>By</th><th>From</th><th class="num">Rows</th><th class="num">Unpaid</th><th></th></tr></thead>
+            <tbody>
+            {% for v in versions %}
+            <tr>
+                <td class="nowrap">{{ v.created_at|central }}</td>
+                <td>{{ v.created_email }}</td>
+                <td>{{ {'run': 'A run', 'upload': 'Upload', 'restore': 'Put back'}.get(v.source, v.source) }}{% if v.is_current %} <span class="pill green">Current</span>{% endif %}{% if v.held_reason %} <span class="pill amber" title="Not made current because {{ v.held_reason }}">Not made current</span>{% endif %}</td>
+                <td class="num">{{ '{:,}'.format(v.row_count) }}</td>
+                <td class="num">{{ v.unpaid_count if v.unpaid_count is not none else '' }} &middot; {{ v.unpaid_amount|money }}</td>
+                <td class="nowrap">
+                    <a class="btn-small" href="{{ url_for('accounts.master_version_download', master_id=v.id) }}">Download</a>
+                    {% if is_admin and not v.is_current %}
+                    <form method="post" action="{{ url_for('accounts.master_restore', master_id=v.id) }}" data-confirm="Click again to confirm">
+                        {{ form_guard() }}
+                        <button class="btn-small" type="submit">Make current</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

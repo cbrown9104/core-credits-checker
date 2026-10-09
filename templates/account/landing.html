@@ -1,0 +1,33 @@
+{% extends 'account/base.html' %}
+{% block title %}{{ app_name }} — Core Credits Checker{% endblock %}
+{% block head %}
+<style>
+    .hero { text-align: center; padding: 56px 20px 34px; }
+    .hero .brand { color: #8ab4f8; font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 18px; }
+    .hero h1 { color: #fff; font-size: 40px; letter-spacing: -1px; line-height: 1.15; margin-bottom: 14px; }
+    .hero p { color: #b0b0cc; font-size: 17px; line-height: 1.55; max-width: 620px; margin: 0 auto 28px; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 10px 0 26px; }
+    @media (max-width: 760px) { .steps { grid-template-columns: 1fr; } .hero h1 { font-size: 30px; } }
+    .step { background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 22px; }
+    .step .k { color: #5a8dee; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
+    .step h3 { color: #fff; font-size: 16px; margin-bottom: 6px; }
+    .step p { color: #9a9abb; font-size: 13px; line-height: 1.55; }
+    .pilot { text-align: center; color: #6a6a9a; font-size: 13px; margin-top: 6px; }
+</style>
+{% endblock %}
+{% block header %}{% endblock %}
+{% block footer %}{{ app_name }}{% endblock %}
+{% block content %}
+<div class="hero">
+    <div class="brand">{{ app_name }}</div>
+    <h1>Find the core credits<br>you were never paid.</h1>
+    <p>Core Credits Checker reads your signed shipper scans and weekly credit memos, keeps your core returns master current, and hands you the unpaid list with a credit request ready to send.</p>
+    <a class="btn-primary" href="{{ url_for('accounts.login') }}">Sign in</a>
+</div>
+<div class="steps">
+    <div class="step"><div class="k">Each week</div><h3>Upload the paperwork</h3><p>This week's credit memo and signed shipper scans. A payment export from the factory portal is optional.</p></div>
+    <div class="step"><div class="k">The app</div><h3>Matches every ticket</h3><p>Credits are matched to shipments by control ticket and every memo is tied out to its net credit amount.</p></div>
+    <div class="step"><div class="k">You get</div><h3>The unpaid list and the request</h3><p>What is still unpaid, how old it is, and a credit request with the signed pages marked.</p></div>
+</div>
+<p class="pilot">Access is by invitation during the pilot. Sign in with the work email you were invited at.</p>
+{% endblock %}
