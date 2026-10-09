@@ -220,22 +220,27 @@ class TestSignIn(AccountsCase):
             content_type='multipart/form-data')
         self.assertEqual(r.status_code, 401)
         self.assertEqual(c.post('/api/check-cores').status_code, 401)
-        # a sign-in post must say how big it is, and be small
+        # A form is small. One that does not say how big it is (a proxy
+        # may pass it on that way) still works...
         token, _ = self.guard(c)
         form = {'email': 'x@nowhere.test', 'csrf_token': token}
         r = c.post('/login', data=form, environ_overrides={
             'CONTENT_LENGTH': '', 'wsgi.input_terminated': True})
-        self.assertEqual(r.status_code, 411)        # a streamed upload
-        r = c.post('/login', data=form, environ_overrides={
-            'CONTENT_LENGTH': ''}, headers={'Transfer-Encoding': 'chunked'})
-        self.assertEqual(r.status_code, 411)
-        r = c.post('/login', data=dict(form, pad='x' * 70000))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'Check your email', r.data)
+        # ...and a big one is cut off, stated size or not
+        big = dict(form, pad='x' * 70000)
+        r = c.post('/login', data=big)
+        self.assertEqual(r.status_code, 413)
+        self.assertIn(b'Too much at once', r.data)
+        r = c.post('/login', data=big, environ_overrides={
+            'CONTENT_LENGTH': '', 'wsgi.input_terminated': True})
         self.assertEqual(r.status_code, 413)
 
     def test_support_address_is_shown_only_when_set(self):
         self.make_store('Help Store', 'hana@help.test')
         hana = self.sign_in('hana@help.test')
-        pages = ('/', '/reconcile', '/history', '/users')
+        pages = ('/quick', '/reconcile', '/history', '/users')
         for path in pages:
             self.assertNotIn(b'Need help?', hana.get(path).data, path)
         os.environ['SUPPORT_EMAIL'] = 'help@partsmanagersolutions.com'
@@ -291,6 +296,59 @@ class TestSignIn(AccountsCase):
         mailer.outbox.clear()
         self.client().head('/login', data={'email': 'pru@probe.test'})
         self.assertEqual(mailer.outbox, [])
+
+    def test_a_double_click_on_continue_still_signs_in(self):
+        self.make_store('Twice Store', 'tia@twice.test')
+        # both clicks leave before the first answer is back: same cookie
+        c = self.client()
+        self.post(c, '/login', {'email': 'tia@twice.test'})
+        link = self.last_link('tia@twice.test')
+        self.assertEqual(c.get(link).status_code, 200)
+        token, _ = self.guard(c)
+        before = c.get_cookie('pms_session').value
+        first = c.post(link, data={'csrf_token': token})
+        self.assertEqual(first.status_code, 302)
+        after = c.get_cookie('pms_session').value
+        c.set_cookie('pms_session', before)         # what click 2 carried
+        second = c.post(link, data={'csrf_token': token})
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(c.get('/reconcile').status_code, 200)
+        # whichever answer the browser keeps, it is signed in
+        c.set_cookie('pms_session', after)
+        self.assertEqual(c.get('/reconcile').status_code, 200)
+        # the second click leaving after the first answer arrived: new
+        # cookie, old page token. Already signed in, so just go on.
+        late = c.post(link, data={'csrf_token': token})
+        self.assertEqual(late.status_code, 302)
+        self.assertTrue(late.headers['Location'].endswith('/reconcile'))
+        # none of this lets another browser use the link
+        other = self.client()
+        self.assertEqual(other.get(link).status_code, 410)
+        self.assertEqual(self.post(other, link).status_code, 410)
+        # and the forgiveness is short
+        from accounts import db
+        db.execute("UPDATE login_tokens SET used_at = used_at - "
+                   "interval '2 minutes'")
+        c2 = self.client()
+        c2.set_cookie('pms_session', before)
+        self.assertEqual(c2.post(link, data={
+            'csrf_token': token}).status_code, 410)
+
+    def test_own_used_link_just_opens_the_app_when_signed_in(self):
+        self.make_store('Again Store', 'ada@again.test')
+        self.make_store('Other Again', 'oli@otheragain.test')
+        c = self.client()
+        self.post(c, '/login', {'email': 'ada@again.test'})
+        link = self.last_link('ada@again.test')
+        self.use_link(c, link)
+        # the emailed link clicked again, or Back after signing in
+        r = c.get(link)
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers['Location'].endswith('/reconcile'))
+        # someone else's dead link is still a dead link
+        oli = self.sign_in('oli@otheragain.test')
+        self.assertEqual(oli.get(link).status_code, 410)
+        self.assertEqual(self.client().get(link).status_code, 410)
 
     def test_using_one_link_retires_the_others(self):
         self.make_store('Retire Store', 'rex@retire.test')
@@ -486,6 +544,36 @@ class TestStores(AccountsCase):
         self.assertEqual(r.status_code, 302)
         self.assertIn(b'Odd Name Store', owner.get('/owner').data)
 
+    def test_errors_get_the_apps_own_page_with_a_way_on(self):
+        self.make_store('Page Store', 'pam@page.test')
+        pam = self.sign_in('pam@page.test')
+        self.post(pam, '/users/add', {'email': 'ulf@page.test',
+                                      'role': 'user'})
+        ulf = self.sign_in('ulf@page.test')
+        r = ulf.get('/users')                       # not an admin
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'Only a store admin can do that', r.data)
+        self.assertIn(b'href="/reconcile"', r.data)
+        for path in ('/reconcile/', '/History', '/no/such/page'):
+            r = ulf.get(path)
+            self.assertEqual(r.status_code, 404, path)
+            self.assertIn(b'That page does not exist', r.data)
+        r = ulf.get('/users/add')                   # a form's address
+        self.assertEqual(r.status_code, 405)
+        self.assertIn(b'Go to the start', r.data)
+        self.assertEqual(ulf.get('/api/nope').get_json()['error'][:9],
+                         'That page')
+        # a refused click is sent back to the page its form is on, not to
+        # the form's own address
+        for path, back in (('/users/add', '/users'),
+                           ('/master/1/restore', '/history'),
+                           ('/logout', '/')):
+            r = pam.post(path, data={'csrf_token': 'stale'})
+            self.assertEqual(r.status_code, 400, path)
+            self.assertIn(f'href="{back}"'.encode(), r.data, path)
+        # signed out, an unknown address is still just "no such page"
+        self.assertEqual(self.client().get('/nope').status_code, 404)
+
     def test_users_page_rules(self):
         from accounts import core, mailer
         store = self.make_store('Users Store', 'ann@users.test')
@@ -542,6 +630,79 @@ class TestStores(AccountsCase):
         old.set_cookie('pms_session', stolen)
         self.assertEqual(old.get('/reconcile').status_code, 302)
 
+    def test_small_slips_on_the_users_and_stores_pages(self):
+        from accounts import core, mailer
+        store = self.make_store('Slip Store', 'sid@slip.test', '45454')
+        sid = self.sign_in('sid@slip.test')
+        self.post(sid, '/users/add', {'email': 'tess@slip.test',
+                                      'role': 'user'})
+        # adding someone who is already on the store: said, nothing sent
+        mailer.outbox.clear()
+        r = self.post(sid, '/users/add', {'email': 'tess@slip.test',
+                                          'role': 'user'},
+                      follow_redirects=True)
+        self.assertIn(b'is already on this store', r.data)
+        self.assertEqual(mailer.outbox, [])
+        # an admin giving up their own admin rights lands on a page they
+        # can still use (the Users page is no longer theirs)
+        self.post(sid, '/users/add', {'email': 'tess@slip.test',
+                                      'role': 'admin'})
+        r = self.post(sid, '/users/add', {'email': 'sid@slip.test',
+                                          'role': 'user'})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'You are now a user', r.data)
+        self.assertEqual(core.role_in(
+            core.user_by_email('sid@slip.test')['id'], store['id']), 'user')
+        # the same store made twice (a double click) is refused
+        owner = self.sign_in(OWNER)
+        r = self.post(owner, '/owner/stores', {
+            'name': 'slip store', 'dealer_code': '45454',
+            'admin_email': 'sid@slip.test'}, follow_redirects=True)
+        self.assertIn(b'There is already a store named', r.data)
+        from accounts import db
+        self.assertEqual(db.one(
+            "SELECT count(*) AS n FROM stores WHERE lower(name) = "
+            "'slip store'")['n'], 1)
+        # a mistyped address is told apart from an empty one
+        r = self.post(self.client(), '/login', {'email': 'sid@slip'})
+        self.assertIn(b'does not look like an email address', r.data)
+
+    def test_the_owner_never_lands_in_a_store_they_only_looked_into(self):
+        mine = self.make_store('Owners Own Store', OWNER, '10101')
+        theirs = self.make_store('Friends Store', 'fred@friend.test',
+                                 '20202')
+        owner = self.sign_in(OWNER)
+        self.assertEqual(owner.get('/reconcile').status_code, 200)
+        with owner.session_transaction() as s:
+            self.assertEqual(s['sid'], mine['id'])
+        # looks into the friend's store
+        self.post(owner, f'/owner/open/{theirs["id"]}')
+        page = owner.get('/reconcile')
+        self.assertIn(b'Friends Store', page.data)
+        self.assertIn(b'Viewing as owner', page.data)
+        # the next sign-in is back in the owner's own store
+        again = self.sign_in(OWNER)
+        page = again.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Owners Own Store', page.data)
+        self.assertNotIn(b'Viewing as owner', page.data)
+
+    def test_the_site_address_opens_the_weekly_run_when_signed_in(self):
+        self.make_store('Home Store', 'hal@home.test')
+        hal = self.sign_in('hal@home.test')
+        r = hal.get('/')
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers['Location'].endswith('/reconcile'))
+        quick = hal.get('/quick')
+        self.assertEqual(quick.status_code, 200)
+        self.assertIn(b'does not use or update your store', quick.data)
+        self.assertIn(b'href="/quick"', hal.get('/reconcile').data)
+        # signed out, Quick Check asks for sign-in and comes back to it
+        r = self.client().get('/quick')
+        self.assertEqual(r.status_code, 302)
+        self.assertIn('next=/quick', r.headers['Location'].replace(
+            '%2F', '/'))
+
     def test_link_sent_before_removal_stops_working(self):
         from accounts import core
         self.make_store('Removal Store', 'rae@removal.test')
@@ -560,10 +721,12 @@ class TestStores(AccountsCase):
         b = self.make_store('Group Store B', 'gm@group.test', '22222')
         gm = self.sign_in('gm@group.test')
         # on two stores with none picked yet: asked, never guessed
-        for path in ('/reconcile', '/', '/history'):
+        for path in ('/reconcile', '/quick', '/history'):
             r = gm.get(path)
             self.assertEqual(r.status_code, 302, path)
             self.assertIn('/stores', r.headers['Location'])
+        self.assertEqual(gm.get('/', follow_redirects=True).request.path,
+                         '/stores')
         page = gm.get('/stores')
         self.assertIn(b'Group Store A', page.data)
         self.assertIn(b'Group Store B', page.data)
@@ -945,6 +1108,23 @@ class TestSavedWork(AccountsCase):
                                    out, master_in=None, may_replace=False)
         self.assertIn('only a store admin', saved['held'])
         self.assertEqual(storage.current_master(store['id'])['id'], v3)
+        # an admin's uploaded workbook: the admin pressed Run looking at
+        # v2, but v3 is current by the time it saves. Held, not swapped in
+        # over a master the admin never saw.
+        storage.begin_run('d' * 32, store['id'], actor, 'reconcile')
+        saved = storage.finish_run('d' * 32, store['id'], actor, result,
+                                   out, master_in=None, may_replace=True,
+                                   seen_master=v2['id'])
+        self.assertIn('changed by someone else', saved['held'])
+        self.assertEqual(storage.current_master(store['id'])['id'], v3)
+        # ...and when nothing changed since they pressed Run, it replaces
+        storage.begin_run('e' * 32, store['id'], actor, 'reconcile')
+        saved = storage.finish_run('e' * 32, store['id'], actor, result,
+                                   out, master_in=None, may_replace=True,
+                                   seen_master=v3)
+        self.assertEqual(saved['held'], '')
+        self.assertEqual(storage.current_master(store['id'])['id'],
+                         saved['master_out'])
 
     def test_an_admin_can_put_an_earlier_master_back(self):
         from accounts import storage
@@ -995,6 +1175,152 @@ class TestSavedWork(AccountsCase):
         self.assertIsNone(storage.current_master(store['id']))
         self.assertEqual(storage.get_run(job_id, store['id'])['status'],
                          'error')                    # not stuck on Running
+
+    def test_two_first_uploads_in_a_row_do_not_overwrite_each_other(self):
+        from accounts import storage
+        from recon import jobs
+        store = self.make_store('Queue Store', 'quy@queue.test')
+        quy = self.sign_in('quy@queue.test')
+        # both submitted while the store has no master yet; the second is
+        # held because a master was saved while it waited its turn
+        jobs._one_at_a_time.acquire()           # nothing starts yet
+        try:
+            a = self.start_recon(quy, {
+                'master': (io.BytesIO(master_bytes(many_rows(12))),
+                           'Core_Returns_RECONCILED.xlsx'),
+                'asof': '2026-10-06'})
+            b = self.start_recon(quy, {
+                'master': (io.BytesIO(master_bytes(many_rows(15, 300))),
+                           'other.xlsx'), 'asof': '2026-10-06'})
+        finally:
+            jobs._one_at_a_time.release()
+        results = []
+        for r in (a, b):
+            self.assertEqual(r.status_code, 200)
+            job_id = r.get_json()['job_id']
+            for _ in range(400):
+                job = quy.get(f'/api/jobs/{job_id}').get_json()
+                if job['status'] in ('done', 'error'):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(job['status'], 'done', job.get('error'))
+            results.append(job['result'])
+        held = [r['master_held'] for r in results]
+        self.assertEqual(sum(1 for h in held if h), 1, held)
+        self.assertIn('changed by someone else', ''.join(held))
+        self.assertIn(storage.current_master(store['id'])['row_count'],
+                      (12, 15))
+        self.assertEqual(len(storage.master_versions(store['id'])), 2)
+
+    def test_nothing_is_left_waiting_when_a_submission_is_refused(self):
+        import app as webapp
+        from recon import jobs
+        self.make_store('Tidy Store', 'ty@tidy.test')
+        ty = self.sign_in('ty@tidy.test')
+        with jobs._lock:
+            before = set(jobs._jobs)
+        folders = set(os.listdir(jobs.JOB_ROOT))
+        # more than the server accepts at once: a plain answer, no job
+        limit = webapp.app.config['MAX_CONTENT_LENGTH']
+        webapp.app.config['MAX_CONTENT_LENGTH'] = 200000
+        try:
+            r = self.start_recon(ty, {
+                'memos': (io.BytesIO(b'x' * 300000), 'big.pdf')})
+        finally:
+            webapp.app.config['MAX_CONTENT_LENGTH'] = limit
+        self.assertEqual(r.status_code, 413)
+        self.assertIn('too large to send together', r.get_json()['error'])
+        # the server cannot keep the upload (disk full, say)
+        real = webapp._save_uploads
+
+        def full(*a, **k):
+            raise OSError(28, 'No space left on device')
+
+        webapp._save_uploads = full
+        try:
+            webapp.app.config['PROPAGATE_EXCEPTIONS'] = False
+            r = self.start_recon(ty, {'dc_text': 'x'})
+        finally:
+            webapp._save_uploads = real
+            webapp.app.config.pop('PROPAGATE_EXCEPTIONS', None)
+        self.assertEqual(r.status_code, 500)
+        for data in ({}, {'master': (io.BytesIO(b'x'), 'm.pdf')}):
+            self.assertEqual(self.start_recon(ty, data).status_code, 400)
+        with jobs._lock:
+            self.assertEqual(set(jobs._jobs), before)
+        self.assertEqual(set(os.listdir(jobs.JOB_ROOT)), folders)
+
+    def test_a_run_left_marked_running_shows_as_stopped(self):
+        from accounts import storage
+        store = self.make_store('Stale Store', 'stu@stale.test')
+        stu = self.sign_in('stu@stale.test')
+        storage.begin_run('f' * 32, store['id'],
+                          {'id': None, 'email': 'stu@stale.test'},
+                          'reconcile')
+        page = stu.get('/history').get_data(as_text=True)
+        self.assertIn('Stopped', page)
+        self.assertIn('stopped before it could be saved', page)
+        self.assertNotIn('In progress', page)
+
+    def test_a_large_result_file_is_kept_in_pieces_and_comes_back_whole(self):
+        from accounts import db, storage
+        from recon import jobs
+        store = self.make_store('Pieces Store', 'pip@pieces.test')
+        pip = self.sign_in('pip@pieces.test')
+        job_id, job = self.first_run(pip)
+        self.assertEqual(job['status'], 'done', job.get('error'))
+        actor = {'id': None, 'email': 'pip@pieces.test'}
+        out = os.path.join(jobs.job_dir(job_id), 'out')
+        # a scan-heavy PDF: bigger than one piece, not an even multiple
+        big = os.urandom(storage.PART_BYTES * 2 + 12345)
+        huge = b'x' * 2048
+        with open(os.path.join(out, 'Credit_Request.pdf'), 'wb') as fh:
+            fh.write(big)
+        with open(os.path.join(out, 'Huge.pdf'), 'wb') as fh:
+            fh.write(huge)
+        result = dict(job['result'])
+        result['files'] = [f for f in result['files']
+                           if f['kind'] != 'zip'] + [
+            {'name': 'Credit_Request.pdf', 'label': 'Signed pages',
+             'kind': 'request', 'size': len(big)},
+            {'name': 'Huge.pdf', 'label': 'Too big', 'kind': 'request',
+             'size': len(huge)},
+            {'name': 'All.zip', 'label': 'Everything', 'kind': 'zip',
+             'size': 1}]
+        limit = storage.MAX_FILE_BYTES
+        storage.MAX_FILE_BYTES = storage.PART_BYTES * 3
+        try:
+            with open(os.path.join(out, 'Huge.pdf'), 'wb') as fh:
+                fh.write(b'x' * (storage.MAX_FILE_BYTES + 1))
+            storage.begin_run('9' * 32, store['id'], actor, 'reconcile')
+            storage.finish_run('9' * 32, store['id'], actor, result, out,
+                               master_in=storage.current_master(
+                                   store['id'])['id'])
+        finally:
+            storage.MAX_FILE_BYTES = limit
+        self.assertEqual(db.one(
+            "SELECT count(*) AS n FROM run_file_parts WHERE run_id = %s "
+            "AND name = 'Credit_Request.pdf'", ('9' * 32,))['n'], 3)
+        self.assertEqual(db.one(
+            'SELECT max(octet_length(content)) AS n FROM run_file_parts '
+            'WHERE run_id = %s', ('9' * 32,))['n'], storage.PART_BYTES)
+        got = pip.get('/api/jobs/' + '9' * 32 + '/files/Credit_Request.pdf')
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.data, big)
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(pip.get(
+            '/api/jobs/' + '9' * 32 + '/files/All.zip').data))
+        self.assertEqual(z.read('Credit_Request.pdf'), big)
+        # the one over the limit is not kept, and the saved run says so
+        saved = pip.get('/api/jobs/' + '9' * 32).get_json()['result']
+        kept = {f['name']: f.get('kept') for f in saved['files']}
+        self.assertIs(kept['Huge.pdf'], False)
+        self.assertIs(kept['Credit_Request.pdf'], True)
+        self.assertEqual(pip.get(
+            '/api/jobs/' + '9' * 32 + '/files/Huge.pdf').status_code, 404)
+        # what the Stores page adds up is the real size
+        owner = self.sign_in(OWNER)
+        self.assertIn(b'MB', owner.get('/owner').data)
 
     def test_quick_check_is_logged(self):
         from accounts import storage
@@ -1161,6 +1487,17 @@ class TestWhenTheDatabaseIsAway(AccountsCase):
             self.assertEqual(c.post('/login', data={
                 'email': 'x@nowhere.test'}).status_code, 503)
             self.assertEqual(c.get('/healthz').status_code, 200)
+            # the health check never waits on the database, even now
+            from accounts import db
+            asked = []
+            real = db._checkout
+            db._checkout = lambda: asked.append(1) or real()
+            try:
+                for _ in range(3):
+                    self.assertEqual(c.get('/healthz').status_code, 200)
+            finally:
+                db._checkout = real
+            self.assertEqual(asked, [])
         finally:
             back()
             self.app.secret_key, web._booted = key, booted
@@ -1251,7 +1588,8 @@ class TestStartUp(AccountsCase):
         import contextlib
         from accounts import db, preflight
         keys = ('DATABASE_URL', 'OWNER_EMAIL', 'MAIL_BACKEND',
-                'RESEND_API_KEY', 'APP_BASE_URL', 'RENDER_EXTERNAL_URL')
+                'RESEND_API_KEY', 'APP_BASE_URL', 'RENDER_EXTERNAL_URL',
+                'RENDER')
         saved = {k: os.environ.get(k) for k in keys}
         wait = preflight.WAIT_SECONDS
         preflight.WAIT_SECONDS = 0
@@ -1322,6 +1660,16 @@ class TestStartUp(AccountsCase):
         self.assertEqual(code, 1, said)
         self.assertIn('APP_BASE_URL', said)
         self.assertNotIn('test-key-never-used', said)
+        # set, but not usable: an address that is not one, or the
+        # development mail setting left on the live host
+        for bad in ('partsmanagersolutions.com', 'yes',
+                    'https://partsmanagersolutions.com/app?x=1'):
+            code, said = self.check(APP_BASE_URL=bad)
+            self.assertEqual(code, 1, bad)
+            self.assertIn('APP_BASE_URL has to be', said)
+        code, said = self.check(RENDER='true')          # MAIL_BACKEND=memory
+        self.assertEqual(code, 1, said)
+        self.assertIn('Remove MAIL_BACKEND', said)
         # everything set: starts, the tables are there, the owner exists
         code, said = self.check()
         self.assertEqual(code, 0, said)
@@ -1336,6 +1684,56 @@ class TestStartUp(AccountsCase):
         code, said = self.check(MAIL_BACKEND=None, RESEND_API_KEY=None)
         self.assertEqual(code, 0, said)
         self.assertIn('WARNING: RESEND_API_KEY', said)
+
+    def test_a_held_table_lock_delays_the_start_but_never_hangs_it(self):
+        import threading
+        import psycopg
+        from accounts import db, preflight
+        self.empty_database()
+        code, said = self.check()               # tables in place
+        self.assertEqual(code, 0, said)
+        # something else (a report tool, a backup) holds a table, and the
+        # tables need changing: the check waits its few seconds per try,
+        # gives up cleanly, and goes through once the lock is gone
+        db.execute("UPDATE settings SET value = 'older' WHERE key = "
+                   "'schema_version'")
+        db.close()
+        holder = psycopg.connect(TEST_DB)
+        holder.execute('LOCK TABLE users IN ACCESS SHARE MODE')
+        saved = (preflight.PAUSE_SECONDS,)
+        preflight.PAUSE_SECONDS = 0.2
+        try:
+            t0 = time.monotonic()
+            code, said = self.check()
+            took = time.monotonic() - t0
+            self.assertEqual(code, 1, said)
+            self.assertIn('could not be made ready', said)
+            self.assertLess(took, 20)
+            threading.Timer(1.0, holder.rollback).start()
+            wait = preflight.WAIT_SECONDS
+            real_check = self.check
+
+            def patient():
+                # like self.check, but with time to wait the lock out
+                import contextlib
+                out = io.StringIO()
+                preflight.WAIT_SECONDS = 30
+                try:
+                    db.close()
+                    with contextlib.redirect_stdout(out):
+                        return preflight.main(), out.getvalue()
+                finally:
+                    preflight.WAIT_SECONDS = wait
+                    db.close()
+
+            code, said = patient()
+            self.assertEqual(code, 0, said)
+        finally:
+            preflight.PAUSE_SECONDS, = saved
+            holder.close()
+        self.assertEqual(
+            db.one("SELECT value FROM settings WHERE key = "
+                   "'schema_version'")['value'], db.schema_version())
 
     def test_tables_are_set_up_once_and_older_ones_are_brought_up(self):
         from accounts import db

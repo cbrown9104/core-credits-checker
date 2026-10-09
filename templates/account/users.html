@@ -33,7 +33,7 @@
                 <td class="nowrap">{{ m.created_at|central }}</td>
                 <td class="nowrap">{{ m.last_used_at|central or 'Not yet' }}</td>
                 <td class="nowrap">
-                    <form method="post" action="{{ url_for('accounts.users_add') }}">
+                    <form method="post" action="{{ url_for('accounts.users_add') }}"{% if m.id == me.id and m.role == 'admin' %} data-confirm="Give up your admin rights?"{% endif %}>
                         {{ form_guard() }}
                         <input type="hidden" name="email" value="{{ m.email }}">
                         <input type="hidden" name="role" value="{{ 'user' if m.role == 'admin' else 'admin' }}">

@@ -14,6 +14,11 @@ from .core import _audit
 # Largest single result file kept in history (anything bigger is skipped
 # and stays downloadable only until the server's 2-hour cleanup).
 MAX_FILE_BYTES = 40 * 1024 * 1024
+# A file is stored in pieces of this size, one piece per statement. The
+# database needs about four times a statement's size in memory while it
+# takes it in, and the smallest database plan has 256 MB in all: a 30 MB
+# scan-heavy PDF in one statement could knock it over.
+PART_BYTES = 2 * 1024 * 1024
 # Result files are kept for this many most-recent finished runs per store.
 # Older runs stay in the history list (who, when, the numbers) without
 # files. Masters are never pruned.
@@ -26,7 +31,9 @@ SHRINK_MIN_ROWS = 10
 INTERRUPTED = ('The server restarted while this run was working. Nothing '
                'was saved. Start the run again.')
 HELD_CHANGED = ('the saved master was changed by someone else while this '
-                'run was working')
+                'run was waiting or working')
+STOPPED_UNSAVED = ('This run stopped before it could be saved. Start it '
+                   'again.')
 HELD_NOT_ADMIN = ('a master was saved for this store while the run was '
                   'working, and only a store admin can replace a saved '
                   'master')
@@ -82,8 +89,11 @@ def check_master_upload(path):
         wb = load_workbook(path, read_only=True)
         names = list(wb.sheetnames)
         wb.close()
-    except Exception as e:
-        raise NotAMaster(f'Could not open the master workbook: {e}')
+    except Exception:
+        raise NotAMaster(
+            'The master workbook could not be opened as an Excel file. '
+            'Open it in Excel, choose Save As > Excel Workbook (.xlsx), '
+            'and add it again.')
     if 'Core Returns' not in names:
         raise NotAMaster(
             'That workbook is not a Core Returns master: it has no "Core '
@@ -222,16 +232,24 @@ def fail_run(run_id, error):
 
 
 def finish_run(run_id, store_id, actor, result, out_dir, master_in=None,
-               may_replace=True):
+               may_replace=True, seen_master=None):
     """Store a finished run: its numbers, the full result, the files, and
     the new master. All in one transaction.
+
+    master_in is the saved master the run started from, or None when it
+    started from an uploaded workbook (or from nothing). seen_master is
+    the master that was current when the person pressed Run.
 
     The new master becomes the store's current one unless something says
     it should not on its own:
     - the run started from the saved master and that master was changed
       (restored, replaced) while the run was working, or
-    - the run started from an uploaded workbook, the person is not an
-      admin (may_replace False) and the store has a saved master by now, or
+    - the run started from an uploaded workbook and the person is not an
+      admin (may_replace False) while the store has a saved master by
+      now, or
+    - the run started from an uploaded workbook and a different master
+      is current than the one the person was looking at when they pressed
+      Run (another run saved while this one waited its turn), or
     - it came out with far fewer rows than the saved master.
     Then it is kept as a version an admin can make current from History.
 
@@ -239,6 +257,7 @@ def finish_run(run_id, store_id, actor, result, out_dir, master_in=None,
     """
     files = []
     master_name = None
+    too_big = []
     for f in (result or {}).get('files', []):
         if f.get('kind') == 'zip':
             continue                    # rebuilt from the others on demand
@@ -247,6 +266,7 @@ def finish_run(run_id, store_id, actor, result, out_dir, master_in=None,
             continue
         size = os.path.getsize(path)
         if size > MAX_FILE_BYTES:
+            too_big.append(f['name'])
             continue
         with open(path, 'rb') as fh:
             content = fh.read()
@@ -267,6 +287,8 @@ def finish_run(run_id, store_id, actor, result, out_dir, master_in=None,
                     held = HELD_CHANGED
                 elif master_in is None and not may_replace:
                     held = HELD_NOT_ADMIN
+                elif master_in is None and current['id'] != seen_master:
+                    held = HELD_CHANGED
                 elif current['row_count'] >= SHRINK_MIN_ROWS and \
                         stats[0] < current['row_count'] * SHRINK_GUARD:
                     held = HELD_SHRANK.format(new=stats[0],
@@ -275,18 +297,29 @@ def finish_run(run_id, store_id, actor, result, out_dir, master_in=None,
                 conn, store_id, master_name, master_content, stats, 'run',
                 actor, run_id, make_current=not held, held_reason=held)
         for name, label, kind, size, content in files:
-            conn.execute(
+            added = conn.execute(
                 'INSERT INTO run_files (run_id, name, label, kind, size, '
-                'content) VALUES (%s, %s, %s, %s, %s, %s) '
+                "content) VALUES (%s, %s, %s, %s, %s, ''::bytea) "
                 'ON CONFLICT (run_id, name) DO NOTHING',
-                (run_id, name, label, kind, size, content))
+                (run_id, name, label, kind, size)).rowcount
+            if not added:
+                continue
+            for n, at in enumerate(range(0, len(content), PART_BYTES)):
+                conn.execute(
+                    'INSERT INTO run_file_parts (run_id, name, part, '
+                    'content) VALUES (%s, %s, %s, %s)',
+                    (run_id, name, n, content[at:at + PART_BYTES]))
+        kept = dict(result or {}, saved=True, master_held=held)
+        if too_big:
+            # said on the page when the run is opened from History
+            kept['files'] = [dict(f, kept=f['name'] not in too_big)
+                             for f in kept.get('files', [])]
         conn.execute(
             "UPDATE runs SET status = 'done', summary = %s, result = %s, "
             "master_in = %s, master_out = %s, finished_at = now() "
             "WHERE id = %s",
             (db.jsonb(dict(summarize(result), master_held=held)),
-             db.jsonb(dict(result or {}, saved=True, master_held=held)),
-             master_in, master_out, run_id))
+             db.jsonb(kept), master_in, master_out, run_id))
         # keep files only for this store's most recent finished runs
         conn.execute(
             "DELETE FROM run_files WHERE run_id IN (SELECT id FROM runs "
@@ -322,21 +355,27 @@ def get_run(run_id, store_id):
 
 def run_file(run_id, name):
     """bytes of one stored result file, or None."""
-    row = db.one('SELECT content FROM run_files WHERE run_id = %s AND '
-                 'name = %s', (run_id, name))
-    if row:
-        return bytes(row['content'])
-    return None
+    row = db.one('SELECT content, size FROM run_files WHERE run_id = %s '
+                 'AND name = %s', (run_id, name))
+    if not row:
+        return None
+    whole = bytes(row['content'])
+    if whole or not row['size']:
+        return whole            # kept in one piece (or an empty file)
+    parts = db.rows('SELECT content FROM run_file_parts WHERE run_id = %s '
+                    'AND name = %s ORDER BY part', (run_id, name))
+    return b''.join(bytes(p['content']) for p in parts)
 
 
 def run_zip(run_id):
     """The run's "everything" zip, rebuilt from its stored files."""
-    rows = db.rows('SELECT name, content FROM run_files WHERE run_id = %s '
-                   'ORDER BY name', (run_id,))
-    if not rows:
+    names = [r['name'] for r in db.rows(
+        'SELECT name FROM run_files WHERE run_id = %s ORDER BY name',
+        (run_id,))]
+    if not names:
         return None
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for r in rows:
-            z.writestr(r['name'], bytes(r['content']))
+        for name in names:
+            z.writestr(name, run_file(run_id, name) or b'')
     return buf.getvalue()

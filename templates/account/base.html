@@ -68,8 +68,8 @@
         .fact .n { font-size: 24px; font-weight: 700; color: #fff; }
         .fact .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #6868aa; }
         a.plain { color: #8ab4f8; }
-        .footer { text-align: center; margin-top: 30px; color: #4a4a6a; font-size: 12px; line-height: 1.6; }
-        .footer a { color: #6a6a9a; }
+        .footer { text-align: center; margin-top: 30px; color: #8a8ab0; font-size: 12px; line-height: 1.6; }
+        .footer a { color: #8ab4f8; }
     </style>
     {% block head %}{% endblock %}
 </head>
@@ -98,15 +98,31 @@
     // the first click turns the button into the question, the second sends.
     document.addEventListener('submit', function (ev) {
         var f = ev.target;
-        if (!f.dataset || !f.dataset.confirm || f.dataset.armed === '1') return;
-        ev.preventDefault();
-        var b = f.querySelector('button[type="submit"]');
-        if (!b) return;
-        var old = b.textContent;
-        f.dataset.armed = '1';
-        b.textContent = f.dataset.confirm;
-        b.classList.add('armed');
-        setTimeout(function () { f.dataset.armed = ''; b.textContent = old; b.classList.remove('armed'); }, 6000);
+        if (!f.dataset) return;
+        // A second click while the first is on its way does nothing (a
+        // double click would otherwise send every form twice).
+        if (f.dataset.sent === '1') { ev.preventDefault(); return; }
+        if (f.dataset.confirm && f.dataset.armed !== '1') {
+            ev.preventDefault();
+            var b = f.querySelector('button[type="submit"]');
+            if (!b) return;
+            var old = b.textContent;
+            f.dataset.armed = '1';
+            f.dataset.armedAt = String(Date.now());
+            b.textContent = f.dataset.confirm;
+            b.classList.add('armed');
+            setTimeout(function () { f.dataset.armed = ''; b.textContent = old; b.classList.remove('armed'); }, 6000);
+            return;
+        }
+        // the confirming click has to be a second, separate click: the
+        // tail of a double click does not count
+        if (f.dataset.confirm && Date.now() - Number(f.dataset.armedAt || 0) < 700) { ev.preventDefault(); return; }
+        f.dataset.sent = '1';
+    });
+    // coming back to the page with the Back button: forms work again
+    window.addEventListener('pageshow', function () {
+        var forms = document.querySelectorAll('form');
+        for (var i = 0; i < forms.length; i++) { forms[i].dataset.sent = ''; }
     });
 </script>
 </body>

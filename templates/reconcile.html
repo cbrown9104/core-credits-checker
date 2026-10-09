@@ -21,7 +21,7 @@
         .header h1 { color: #fff; font-size: 32px; margin-bottom: 6px; letter-spacing: -0.5px; }
         .header p { color: #8888aa; font-size: 15px; }
 
-        .tabs { display: flex; justify-content: center; gap: 8px; margin: -14px 0 26px; }
+        .tabs { display: flex; justify-content: center; gap: 8px; margin: -14px 0 26px; flex-wrap: wrap; }
         .tab {
             padding: 9px 18px; border-radius: 8px; border: 1px solid #2a2a4a;
             background: #16213e; color: #8888aa; font-size: 14px; font-weight: 600;
@@ -52,10 +52,13 @@
         }
         .drop-zone:hover, .drop-zone.dragover { background: #1a4a7a; border-color: #5a8dee; }
         .drop-zone:hover .act, .drop-zone.dragover .act { color: #8ab4f8; }
+        .drop-zone:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 2px; }
         .drop-zone input[type="file"] { display: none; }
         .drop-zone .doc { font-size: 15px; font-weight: 600; color: #d0d8f0; }
         .drop-zone .act { font-size: 13px; color: #7f8fc0; }
-        .drop-zone .hint { font-size: 11px; margin-top: 4px; color: #6a6a9a; line-height: 1.45; max-width: 420px; }
+        .drop-zone .hint { font-size: 12px; margin-top: 4px; color: #a0a8cc; line-height: 1.45; max-width: 420px; }
+        .first-run { background: #14284f; border: 1px solid #3a5a9a; border-radius: 10px; padding: 14px 18px; margin-bottom: 22px; font-size: 14px; color: #d0d8f0; line-height: 1.6; }
+        .first-run strong { color: #fff; }
 
         .saved-master {
             padding: 18px 16px; background: #12283f; border: 1px solid #2a6a3a; border-radius: 8px;
@@ -64,7 +67,7 @@
         }
         .saved-master .doc { font-size: 15px; font-weight: 600; color: #8cd88c; }
         .saved-master .act { font-size: 13px; color: #c0c0e0; }
-        .saved-master .hint { font-size: 11px; margin-top: 4px; color: #7f8fc0; line-height: 1.6; max-width: 420px; }
+        .saved-master .hint { font-size: 12px; margin-top: 4px; color: #a0a8cc; line-height: 1.6; max-width: 420px; }
         .saved-master a, .saved-master button.linkish {
             color: #8ab4f8; background: none; border: none; font-size: 11px; cursor: pointer;
             text-decoration: underline; padding: 0; font-family: inherit;
@@ -231,7 +234,8 @@
         .pill.blue { background: #1a2e55; color: #8ab4f8; } .pill.green { background: #1a3a2a; color: #8cd88c; }
         details summary { cursor: pointer; color: #8ab4f8; font-size: 13px; margin: 8px 0; }
 
-        .footer { text-align: center; margin-top: 30px; color: #4a4a6a; font-size: 12px; line-height: 1.6; }
+        .footer { text-align: center; margin-top: 30px; color: #8a8ab0; font-size: 12px; line-height: 1.6; }
+        .footer a { color: #8ab4f8; }
     </style>
 </head>
 <body>
@@ -246,9 +250,15 @@
     <div class="error-msg" id="errorMessage"></div>
 
     <div class="card" id="formCard">
+        {% if accounts_on and me and not saved_master %}
+        <div class="first-run">
+            <strong>First run.</strong> Put this week's credit memo PDF in box 2 and your signed shipper scans in box 3, then press Run Reconciliation.
+            Box 1 can stay empty: the app starts your core returns list (the "master") and keeps it for your store. Box 4 is optional.
+        </div>
+        {% endif %}
         <div class="upload-grid">
             <div class="form-group">
-                <label class="title">1 · Master workbook</label>
+                <label class="title">1 · Master workbook{% if accounts_on and me and not saved_master %} <span class="opt">(optional)</span>{% endif %}</label>
                 {% if saved_master %}
                 <div class="saved-master" id="savedMaster">
                     <div class="doc">Saved on your store's account</div>
@@ -260,13 +270,17 @@
                 {% endif %}
                 <div id="masterReplace"{% if saved_master %} style="display:none;"{% endif %}>
                     <div class="drop-zone" id="masterZone">
+                        {% if accounts_on and me and not saved_master %}
+                        <div class="doc">Your core returns list, if you keep one</div>
+                        <div class="act">Drop the workbook or click</div>
+                        <div class="hint">First time? Leave this empty. The app builds the list from your memos and scans and saves it to your store's account. Already keep a Core Returns workbook? Drop it here to start from it.</div>
+                        {% elif saved_master %}
                         <div class="doc">Core_Returns_RECONCILED.xlsx</div>
                         <div class="act">Drop the workbook or click</div>
-                        {% if saved_master %}
                         <div class="hint">The workbook you drop here replaces the saved master: this run starts from it instead. The saved one stays in History.</div>
-                        {% elif accounts_on and me %}
-                        <div class="hint">First time: drop the master you keep now, or leave empty to start a brand-new one. After this run it is saved to your store's account.</div>
                         {% else %}
+                        <div class="doc">Core_Returns_RECONCILED.xlsx</div>
+                        <div class="act">Drop the workbook or click</div>
                         <div class="hint">Last week's master. Leave empty to start a brand-new one.</div>
                         {% endif %}
                         <input type="file" id="masterFile" accept=".xlsx,.xlsm">
@@ -381,6 +395,12 @@
             sync();
         }
         zone.addEventListener('click', () => input.click());
+        // reachable without a mouse: Tab to the box, Enter or Space to pick
+        zone.tabIndex = 0;
+        zone.setAttribute('role', 'button');
+        zone.addEventListener('keydown', ev => {
+            if (ev.target === zone && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); input.click(); }
+        });
         input.addEventListener('change', () => add(input.files));
         ['dragenter', 'dragover'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('dragover'); }));
         ['dragleave', 'drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('dragover'); }));
@@ -455,7 +475,12 @@
         document.getElementById('results').style.display = 'none';
         showProgress('Uploading files…', []);
         try {
-            const resp = await fetch('/api/reconcile', { method: 'POST', body: fd, headers: window.guardHeaders ? window.guardHeaders() : {} });
+            let resp;
+            try {
+                resp = await fetch('/api/reconcile', { method: 'POST', body: fd, headers: window.guardHeaders ? window.guardHeaders() : {} });
+            } catch (e) {
+                throw new Error('Could not reach the site. Check your connection and press Run again. Your files are still attached.');
+            }
             const data = await readJson(resp);
             if (!resp.ok) throw new Error(data.error || ('Server error ' + resp.status));
             location.hash = 'job=' + data.job_id;
@@ -470,7 +495,10 @@
     async function readJson(resp) {
         const raw = await resp.text();
         try { return JSON.parse(raw); }
-        catch (e) { throw new Error('The server did not answer normally (HTTP ' + resp.status + '). If the app was asleep, wait a minute and try again.'); }
+        catch (e) {
+            if (resp.status === 413) throw new Error('These files are too large to send together (the limit is 100 MB). Use fewer scans in one run.');
+            throw new Error('The server did not answer normally (HTTP ' + resp.status + '). Wait a minute and press Run again. Your files are still attached.');
+        }
     }
 
     function poll(jobId) {
@@ -479,6 +507,13 @@
             if (job.status === 'done') {
                 hideProgress();
                 renderResults(jobId, job.result);
+                document.getElementById('runBtn').disabled = false;
+                return;
+            }
+            if (job.signed_out) {
+                // the run itself is not affected by this browser signing out
+                hideProgress();
+                showError('You were signed out. The run keeps going and will be in History. ', '/login?next=/history', 'Sign in again');
                 document.getElementById('runBtn').disabled = false;
                 return;
             }
@@ -506,7 +541,8 @@
     }
     async function readJsonSafe(resp) {
         const data = await resp.json().catch(() => ({}));
-        if (resp.status === 404) { throw Object.assign(new Error(data.error || 'Run not found'), { fatal: true }); }
+        if (resp.status === 401) { return { signed_out: true }; }
+        if (resp.status === 404 || resp.status === 409) { throw Object.assign(new Error(data.error || 'Run not found'), { fatal: true }); }
         // A server that is busy or restarting is not the run failing: the
         // run keeps working, so keep asking instead of showing an error.
         if (resp.status >= 500 || resp.status === 429) { throw new Error(data.error || ('The server is not answering (HTTP ' + resp.status + ').')); }
@@ -522,9 +558,16 @@
         document.getElementById('progLog').innerHTML = (log || []).map(l => '<li>' + esc(l) + '</li>').join('');
     }
     function hideProgress() { document.getElementById('progress').style.display = 'none'; }
-    function showError(msg) {
+    function showError(msg, link, linkText) {
         const e = document.getElementById('errorMessage');
         e.textContent = msg;
+        if (link) {
+            const a = document.createElement('a');
+            a.href = link;
+            a.textContent = linkText || link;
+            a.style.color = '#fff';
+            e.appendChild(a);
+        }
         e.classList.add('show');
         document.getElementById('formCard').style.display = 'block';
     }
@@ -532,7 +575,8 @@
     // ── results ──
     function money(n) {
         if (n === null || n === undefined || n === '') return '';
-        return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const v = Number(n);
+        return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
     function sum(list, key) { return (list || []).reduce((a, x) => a + (Number(x[key]) || 0), 0); }
     function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
@@ -571,13 +615,19 @@
         // downloads
         h += '<div class="card downloads"><h2>Download</h2><div class="dl-list">';
         (r.files || []).forEach(f => {
+            if (r.from_history && f.kept === false) {
+                // too large to keep: it was only on offer right after the run
+                h += '<div class="dl" style="opacity:.55;cursor:default;"><div><div class="name">' + esc(f.name) + '</div><div class="what">Not kept in History (over 40 MB). It was available for 2 hours after the run.</div></div>' +
+                    '<div class="size">' + fmtSize(f.size) + '</div></div>';
+                return;
+            }
             h += '<a class="dl' + (f.kind === 'zip' ? ' zip' : '') + '" href="/api/jobs/' + jobId + '/files/' + encodeURIComponent(f.name) + '">' +
                 '<div><div class="name">' + esc(f.name) + '</div><div class="what">' + esc(f.label) + '</div></div>' +
                 '<div class="size">' + fmtSize(f.size) + ' ⬇</div></a>';
         });
         h += '</div><p class="note" style="margin-top:12px;margin-bottom:0;">As of ' + esc(r.asof) +
             (r.dealer ? ' · Dealer ' + esc(r.dealer) : '') + ' · ' + (r.inputs.master_rows || 0) + ' rows in the master before this run' +
-            (r.pages_scanned ? ' · ' + r.pages_scanned + ' shipper pages read' : '') + '</p></div>';
+            (r.pages_scanned ? ' · ' + r.pages_scanned + (r.pages_scanned === 1 ? ' shipper page read' : ' shipper pages read') : '') + '</p></div>';
 
         if (r.saved === true && r.master_held) {
             h += '<div class="warn"><strong>The master from this run was NOT made your current master</strong> because ' + esc(r.master_held) +
@@ -599,7 +649,10 @@
                 table([['Shipper date'], ['Control ticket', 'mono'], ['Part #'], ['Amount', 'num'], ['Age', 'num'], ['Requested before'], ['Signed page']], rows),
                 'These go on Credit_Request.xlsx (Dealer Code · GCRS Shipper Date · Ticket). Credit_Request.pdf has each signed shipper page with "UnPaid" marked next to these tickets.');
         } else {
-            h += section('Credit request', 0, '<div class="ok-box">No unpaid tickets are ' + r.threshold + '+ days old (or they were all requested before).</div>');
+            const before = (r.prev_requested || []).length;
+            h += section('Credit request', 0, '<div class="ok-box">' + (before ?
+                'Nothing new to request. The ' + before + ' unpaid ticket' + (before === 1 ? '' : 's') + ' at ' + r.threshold + '+ days ' + (before === 1 ? 'was' : 'were') + ' requested before (listed below).' :
+                'No unpaid tickets are ' + r.threshold + '+ days old.') + '</div>');
         }
         if (r.rescan && r.rescan.length) {
             h += section('Shippers to re-scan', r.rescan.reduce((a, g) => a + g.tickets.length, 0),

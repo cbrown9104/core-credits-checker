@@ -14,6 +14,7 @@ instead of putting up a site that nobody can sign in to.
 The database password is never printed.
 """
 import os
+import signal
 import sys
 import time
 
@@ -86,6 +87,9 @@ def _reach(u):
             return None
         except (psycopg.OperationalError, OSError) as e:
             reason, may_pass = explain(e)
+        except Exception as e:      # an address the driver cannot use
+            reason, may_pass = ('The database could not be reached ('
+                                f'{e.__class__.__name__}).'), False
         if not may_pass or time.monotonic() + PAUSE_SECONDS >= deadline:
             return reason
         if reason != told:
@@ -95,12 +99,58 @@ def _reach(u):
         time.sleep(PAUSE_SECONDS)
 
 
+def _give_up(signum, frame):
+    say('NOT STARTED. The start-up check did not finish in time: the '
+        'database stopped answering part way through.')
+    os._exit(1)
+
+
+def _make_ready():
+    """The steps the web server takes on its first request, done here so
+    a problem stops the deploy instead of the live site. A table lock held
+    by something else, or a blip, is waited out for a while."""
+    from . import core
+    deadline = time.monotonic() + min(WAIT_SECONDS, 60)
+    while True:
+        try:
+            db.pool()                   # puts the tables in place
+            core.secret('session_key')
+            owners = core.ensure_owners()
+            people = db.one(
+                'SELECT count(*) AS n FROM users u WHERE u.is_owner OR '
+                'EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = '
+                'u.id)')['n']
+            ever = db.one('SELECT 1 AS x FROM users WHERE last_login_at '
+                          'IS NOT NULL LIMIT 1')
+            stores = db.one('SELECT count(*) AS n FROM stores')['n']
+            return owners, people, ever, stores
+        except db.Unavailable:
+            if time.monotonic() + PAUSE_SECONDS >= deadline:
+                raise
+            db.close()
+            time.sleep(PAUSE_SECONDS)
+
+
 def main():
     u = db.url()
     if not u:
         say('Accounts are off (DATABASE_URL is not set). The site runs '
             'open: no sign-in, nothing saved.')
         return 0
+    timed = hasattr(signal, 'SIGALRM')
+    if timed:
+        # nothing here may wait forever, whatever the database does
+        was = signal.signal(signal.SIGALRM, _give_up)
+        signal.alarm(WAIT_SECONDS + 90)
+    try:
+        return _check(u)
+    finally:
+        if timed:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, was)
+
+
+def _check(u):
     try:
         db.check_url(u)
     except db.Unavailable as e:
@@ -120,22 +170,14 @@ def main():
                              'Or remove DATABASE_URL to keep the site '
                              'running open.'])
 
-    # Same steps the web server takes on its first request, done here so a
-    # problem stops the deploy instead of the live site.
-    from . import core, mailer
+    from . import mailer
     try:
-        db.pool()                       # puts the tables in place
-        core.secret('session_key')
-        owners = core.ensure_owners()
-        people = db.one(
-            'SELECT count(*) AS n FROM users u WHERE u.is_owner OR EXISTS '
-            '(SELECT 1 FROM memberships m WHERE m.user_id = u.id)')['n']
-        ever = db.one('SELECT 1 AS x FROM users WHERE last_login_at IS NOT '
-                      'NULL LIMIT 1')
-        stores = db.one('SELECT count(*) AS n FROM stores')['n']
+        owners, people, ever, stores = _make_ready()
     except Exception as e:      # reached, but could not be made ready
+        cause = e.__cause__ if isinstance(e, db.Unavailable) and \
+            e.__cause__ is not None else e
         return stop('The database answered, but it could not be made '
-                    f'ready ({db.brief(e)}).')
+                    f'ready ({db.brief(cause)}).')
     finally:
         db.close()
     say(f'Database reached. Tables are in place. Stores: {stores}. People '
@@ -149,13 +191,21 @@ def main():
     elif not owners:
         say('Note: OWNER_EMAIL is not set, so there is no owner account '
             '(nobody can add stores).')
-    if not mailer.configured():
+    how = mailer.backend()
+    if how is None:
         missing.append('RESEND_API_KEY is not set, so sign-in links cannot '
                        'be emailed.')
-    base = next((os.environ.get(k, '').strip().rstrip('/')
-                 for k in ('APP_BASE_URL', 'RENDER_EXTERNAL_URL')
-                 if os.environ.get(k, '').strip()), '')
-    if not base and mailer.backend() not in ('log', 'memory'):
+    elif how != 'resend' and os.environ.get('RENDER'):
+        # the development settings, on the live host
+        missing.append(f'MAIL_BACKEND is set to {how}, so sign-in links '
+                       f'would not be emailed. Remove MAIL_BACKEND.')
+    base = mailer.site_url()
+    wanted = os.environ.get('APP_BASE_URL', '').strip()
+    if wanted and wanted.rstrip('/') != base:
+        missing.append('APP_BASE_URL has to be the site\'s address and '
+                       'nothing else, such as '
+                       'https://partsmanagersolutions.com.')
+    elif not base and how not in ('log', 'memory'):
         missing.append('APP_BASE_URL is not set, so sign-in links cannot '
                        'be built (set it to the site\'s address, such as '
                        'https://partsmanagersolutions.com).')
@@ -167,8 +217,7 @@ def main():
                     missing + ['Fix the settings above, then deploy again.'])
     for line in missing:
         say('WARNING: ' + line)
-    if mailer.configured():
-        how = mailer.backend()
+    if how is not None:
         say('Email: ' + ('sent through Resend' if how == 'resend' else
                          f'NOT sent (MAIL_BACKEND={how}: for development '
                          f'only)') + f', from {mailer.sender()}.')

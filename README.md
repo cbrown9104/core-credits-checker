@@ -42,6 +42,8 @@ Off by default. Set `DATABASE_URL` (Postgres) and the app turns into a
 signed-in service:
 
 - **Front page** with a Sign in button. Nothing else is reachable signed out.
+  Signed in, the site's address opens Full Reconciliation (the weekly run);
+  Quick Check is at `/quick`.
 - **Sign-in by emailed link.** No passwords. A link works once and expires in
   20 minutes; the browser stays signed in for 30 days. Only invited emails get
   a link.
@@ -100,7 +102,9 @@ says it could not be saved.
 
 Not stored: the scans and memos you upload (deleted when a run ends).
 Stored per store: the master (every version), each run's result files and
-numbers, who is on the store.
+numbers, who is on the store. Result files are stored in 2 MB pieces, so a
+large scan-heavy PDF never needs much database memory at once; files over
+40 MB are not kept. The owner's Stores page shows how much is stored.
 
 ## Run locally
 ```

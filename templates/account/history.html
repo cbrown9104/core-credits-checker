@@ -1,6 +1,14 @@
 {% extends 'account/base.html' %}
 {% block title %}History — {{ store.name }}{% endblock %}
 {% block subtitle %}Saved master and every run for {{ store.name }}{% endblock %}
+{% block head %}
+<style>
+    /* the Open button stays in view: the message wraps instead of pushing it off the side */
+    td.why { white-space: normal; line-height: 1.5; min-width: 260px; }
+    td.act { white-space: normal; }
+    td.act .pill { white-space: nowrap; margin-top: 4px; }
+</style>
+{% endblock %}
 {% block content %}
 <div class="card">
     <h2>Saved master</h2>
@@ -32,7 +40,7 @@
             {% set s = r.summary or {} %}
             <tr>
                 <td class="nowrap">{{ r.created_at|central }}</td>
-                <td>{{ r.user_email }}</td>
+                <td title="{{ r.user_email }}">{{ r.user_email.split('@')[0] }}</td>
                 {% if r.kind == 'quick' %}
                 <td><span class="pill blue">Quick Check</span></td>
                 <td class="num" colspan="2">{{ s.get('credited_count', '') }} credited of {{ s.get('shipper_count', '') }} shipped</td>
@@ -44,14 +52,14 @@
                 <td class="num">{{ s.get('new_shipments', 0) }}</td>
                 <td class="num">{{ s.get('unpaid', 0) }} &middot; {{ s.get('unpaid_amount')|money }}</td>
                 <td class="num">{{ s.get('credit_request', 0) }} &middot; {{ s.get('request_amount')|money }}</td>
-                <td class="nowrap">{% if s.get('master_held') %}<span class="pill amber" title="Its master was not made current because {{ s.get('master_held') }}">Master held</span> {% endif %}{% if r.file_count %}<a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a>{% else %}<span class="pill blue">Files not kept</span>{% endif %}</td>
+                <td class="act">{% if r.file_count %}<a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a>{% else %}<span class="pill blue">Files not kept</span>{% endif %}{% if s.get('master_held') %} <span class="pill amber" title="Its master was not made current because {{ s.get('master_held') }}">Master held</span>{% endif %}</td>
                 {% elif r.status == 'error' %}
-                <td class="nowrap">{{ r.asof or '' }} <span class="pill red">Stopped</span></td>
-                <td colspan="5">{{ r.error or 'The run stopped with an error.' }}</td>
+                <td class="nowrap">{{ r.asof or '' }}</td>
+                <td colspan="5" class="why"><span class="pill red">Stopped</span> {{ r.error or 'The run stopped with an error.' }}</td>
                 {% else %}
-                <td class="nowrap">{{ r.asof or '' }} <span class="pill amber">Running</span></td>
-                <td colspan="4">In progress</td>
-                <td class="nowrap"><a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a></td>
+                <td class="nowrap">{{ r.asof or '' }}</td>
+                <td colspan="4"><span class="pill amber">Running</span> In progress</td>
+                <td class="act"><a class="btn-small" href="/reconcile#job={{ r.id }}">Open</a></td>
                 {% endif %}
             </tr>
             {% endfor %}

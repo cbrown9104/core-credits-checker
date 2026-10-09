@@ -141,6 +141,13 @@ def _run(job_id, work, on_done=None, on_error=None):
                           ignore_errors=True)
 
 
+def is_live(job_id):
+    """True while the job is waiting or working in this server."""
+    with _lock:
+        job = _jobs.get(job_id)
+        return bool(job) and job['status'] in ('queued', 'running')
+
+
 def get(job_id):
     if not JOB_ID_RE.match(job_id or ''):
         return None

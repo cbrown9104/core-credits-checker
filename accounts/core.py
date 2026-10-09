@@ -142,12 +142,18 @@ def role_in(user_id, store_id):
 
 def remember_store(user_id, store_id):
     """Note the store a person just opened, so the next sign-in lands
-    there (and never in a store someone else added them to since)."""
+    there (and never in a store someone else added them to since). Only
+    a store the person is ON is remembered: the owner looking into
+    someone else's store must not land there next time and put their own
+    paperwork into it."""
     with db.connect() as conn:
-        conn.execute('UPDATE users SET last_store_id = %s WHERE id = %s',
-                     (store_id, user_id))
-        conn.execute('UPDATE memberships SET last_used_at = now() WHERE '
-                     'user_id = %s AND store_id = %s', (user_id, store_id))
+        on_it = conn.execute(
+            'UPDATE memberships SET last_used_at = now() WHERE '
+            'user_id = %s AND store_id = %s', (user_id, store_id)).rowcount
+        if on_it:
+            conn.execute('UPDATE users SET last_store_id = %s WHERE '
+                         'id = %s', (store_id, user_id))
+    return bool(on_it)
 
 
 def all_stores():
@@ -198,6 +204,16 @@ def create_store(name, dealer_code, admin_email, actor):
         raise AccountError('Enter a valid email for the store\'s first '
                            'admin.')
     with db.connect() as conn:
+        # one at a time, so a double click cannot make the store twice
+        conn.execute('SELECT pg_advisory_xact_lock(712006)')
+        twin = conn.execute(
+            'SELECT 1 AS x FROM stores WHERE lower(name) = lower(%s) AND '
+            'dealer_code = %s LIMIT 1',
+            (name, clean_dealer(dealer_code))).fetchone()
+        if twin:
+            raise AccountError(
+                f'There is already a store named {name} with that dealer '
+                f'code. It is in the list below.')
         store = conn.execute(
             'INSERT INTO stores (name, dealer_code, created_by) '
             'VALUES (%s, %s, %s) RETURNING *',
@@ -256,7 +272,9 @@ def _keep_one_admin(conn, store_id, leaving_user_id):
 
 
 def add_member(store_id, email, role, actor):
-    """Add (or re-role) a person on a store. Returns (user, created)."""
+    """Add (or re-role) a person on a store. Returns (user, created,
+    changed): created when they were not on the store before, changed
+    when they were and their role is different now."""
     if role not in ROLES:
         raise AccountError('Pick a role: admin or user.')
     if not valid_email(email):
@@ -278,7 +296,7 @@ def add_member(store_id, email, role, actor):
         _audit(conn, store_id, actor,
                'user_role_changed' if had else 'user_added',
                {'email': user['email'], 'role': role})
-    return user, not had
+    return user, not had, bool(had and had['role'] != role)
 
 
 def remove_member(store_id, user_id, actor):
@@ -381,33 +399,86 @@ def peek_login_token(token):
         't.expires_at > now()', (_hash(token),))
 
 
-def use_login_token(token):
-    """Use a link up. Returns (user, store_id) or (None, None) if it was
-    already used, expired or never existed. A link works exactly once, and
-    using one retires every other link that person still had."""
+def token_owner(token):
+    """The id of the person a link was made for, whatever state the link
+    is in (used, expired), or None if there is no such link."""
     if not token or len(token) > 200:
-        return None, None
+        return None
+    row = db.one('SELECT user_id FROM login_tokens WHERE token_hash = %s',
+                 (_hash(token),))
+    return row['user_id'] if row else None
+
+
+# The same browser pressing Continue again this soon after it used a link
+# (a double click) is let in instead of being told the link is dead.
+SAME_PRESS_SECONDS = 60
+
+
+def use_login_token(token, browser=''):
+    """Use a link up and start the session, in one step (so a link is
+    never spent without a session to show for it).
+
+    Returns (user, store_id, session_id) or (None, None, None) if the link
+    was already used, expired or never existed. A link works exactly once,
+    and using one retires every other link that person still had.
+
+    browser identifies the browser pressing Continue (its page token). A
+    second press from that same browser within SAME_PRESS_SECONDS, which
+    is what a double click sends, gets a session too.
+    """
+    nothing = (None, None, None)
+    if not token or len(token) > 200:
+        return nothing
+    mark = _hash(browser) if browser else ''
     with db.connect() as conn:
         owner = conn.execute('SELECT user_id FROM login_tokens WHERE '
                              'token_hash = %s', (_hash(token),)).fetchone()
         if not owner:
-            return None, None
+            return nothing
         # One sign-in per person at a time: two of their links pressed at
         # the same moment take turns instead of blocking each other.
         conn.execute('SELECT id FROM users WHERE id = %s FOR UPDATE',
                      (owner['user_id'],))
         row = conn.execute(
-            'UPDATE login_tokens SET used_at = now() WHERE token_hash = %s '
-            'AND used_at IS NULL AND expires_at > now() '
-            'RETURNING user_id, store_id', (_hash(token),)).fetchone()
+            'UPDATE login_tokens SET used_at = now(), used_by = %s WHERE '
+            'token_hash = %s AND used_at IS NULL AND expires_at > now() '
+            'RETURNING user_id, store_id', (mark, _hash(token))).fetchone()
+        if row:
+            conn.execute('UPDATE login_tokens SET used_at = now() WHERE '
+                         'user_id = %s AND used_at IS NULL',
+                         (row['user_id'],))
+        elif mark:
+            row = conn.execute(
+                "SELECT user_id, store_id FROM login_tokens WHERE "
+                "token_hash = %s AND used_by = %s AND used_at > now() - "
+                "make_interval(secs => %s)",
+                (_hash(token), mark, SAME_PRESS_SECONDS)).fetchone()
         if not row:
-            return None, None
-        conn.execute('UPDATE login_tokens SET used_at = now() WHERE '
-                     'user_id = %s AND used_at IS NULL', (row['user_id'],))
+            return nothing
         user = conn.execute(
             'UPDATE users SET last_login_at = now() WHERE id = %s '
             'RETURNING *', (row['user_id'],)).fetchone()
-    return user, row['store_id']
+        if not can_sign_in(user, conn):
+            return nothing
+        sid = secrets.token_urlsafe(32)
+        conn.execute(
+            'INSERT INTO sessions (id, user_id, expires_at) VALUES '
+            '(%s, %s, %s)', (_hash(sid), user['id'], _now() +
+                             datetime.timedelta(days=SESSION_DAYS)))
+        conn.execute('DELETE FROM sessions WHERE expires_at < now()')
+    return user, row['store_id'], sid
+
+
+def just_used_by(token, user_id):
+    """True when this link was used by this person moments ago (the second
+    half of a double click arriving after the first already signed them
+    in)."""
+    if not token or len(token) > 200:
+        return False
+    return bool(db.one(
+        "SELECT 1 AS x FROM login_tokens WHERE token_hash = %s AND "
+        "user_id = %s AND used_at > now() - make_interval(secs => %s)",
+        (_hash(token), user_id, SAME_PRESS_SECONDS)))
 
 
 # ── sessions (one row per signed-in browser) ────────────────────────────

@@ -49,8 +49,14 @@
 {% endif %}
 <nav class="tabs"{% if accounts_on and me %} style="margin-top:0;"{% endif %}>
     {% if not (accounts_on and me) or store %}
+    {% if accounts_on and me %}
+    {# signed in: the weekly run is home, so it comes first #}
+    <a class="tab{{ ' active' if active == 'reconcile' }}" href="/reconcile">Full Reconciliation</a>
+    <a class="tab{{ ' active' if active == 'quick' }}" href="/quick">Quick Check</a>
+    {% else %}
     <a class="tab{{ ' active' if active == 'quick' }}" href="/">Quick Check</a>
     <a class="tab{{ ' active' if active == 'reconcile' }}" href="/reconcile">Full Reconciliation</a>
+    {% endif %}
     {% endif %}
     {% if accounts_on and me %}
     {% if store %}<a class="tab{{ ' active' if active == 'history' }}" href="/history">History</a>{% endif %}

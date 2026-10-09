@@ -48,6 +48,20 @@ def support_email():
     return v if EMAIL_SHAPE.match(v) else ''
 
 
+SITE_RE = re.compile(r'^https?://[A-Za-z0-9.\-]+(:\d{1,5})?$')
+
+
+def site_url():
+    """The site's public address, where emailed links point: APP_BASE_URL,
+    else the address Render gives the service. '' when neither is a plain
+    address (https://name, nothing after it)."""
+    for key in ('APP_BASE_URL', 'RENDER_EXTERNAL_URL'):
+        v = os.environ.get(key, '').strip().rstrip('/')
+        if v and SITE_RE.match(v):
+            return v
+    return ''
+
+
 def sender():
     return (os.environ.get('MAIL_FROM', '').strip() or
             f'{app_name()} <signin@partsmanagersolutions.com>')
@@ -178,12 +192,18 @@ def send_sign_in(to, link, minutes):
 def send_invite(to, link, store_name, inviter, minutes):
     name = app_name()
     site = link.split('/login/link/')[0]
-    lines = [f'{inviter} added you to {store_name} on {name}.',
+    lines = [f'{inviter} added you to {store_name} on Core Credits Checker '
+             f'({name}).',
+             'It reads your signed shipper scans and weekly credit memos '
+             'and shows which core returns were never paid. For a first '
+             'run, have this week\'s credit memo PDF and your signed '
+             'shipper scans ready.',
              'There is no password. Use this link to sign in.',
              f'It works once and expires in {minutes // 60} hours. After '
              f'that, go to {site} and ask for a new link with this email '
              f'address.']
     foot = 'If you were not expecting this, ignore this email.'
     text = '\n\n'.join(lines + [link, foot])
-    send(to, f'You have been added to {store_name} on {name}', text,
-         _wrap(f'{store_name} on {name}', lines, link, 'Sign in', foot))
+    send(to, f'Sign in to Core Credits Checker for {store_name}', text,
+         _wrap(f'{store_name} on Core Credits Checker', lines, link,
+               'Sign in', foot))

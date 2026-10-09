@@ -360,6 +360,7 @@
             justify-content: center;
             gap: 8px;
             margin: -14px 0 26px;
+            flex-wrap: wrap;
         }
 
         .tab {
@@ -384,9 +385,21 @@
         .footer {
             text-align: center;
             margin-top: 30px;
-            color: #4a4a6a;
+            color: #8a8ab0;
             font-size: 12px;
         }
+
+        .quick-note {
+            background: #14284f;
+            border: 1px solid #3a5a9a;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #d0d8f0;
+            line-height: 1.55;
+        }
+        .quick-note a { color: #8ab4f8; }
     </style>
 </head>
 <body>
@@ -400,13 +413,20 @@
 
         <div class="error-msg" id="errorMessage"></div>
 
+        {% if accounts_on and me %}
+        <div class="quick-note">
+            A one-off check of one shipper against credit memos. It does not use or update your store's saved master.
+            For the weekly run use <a href="/reconcile">Full Reconciliation</a>.
+        </div>
+        {% endif %}
+
         <div class="upload-card" id="uploadCard">
             <div class="upload-row">
                 <div class="form-group">
                     <label>GCRS Shipper PDFs (scanned)</label>
                     <div class="drop-zone" id="shipperZone">
                         <div>Drop shipper PDF here or click to select</div>
-                        <div style="font-size:11px;margin-top:4px;color:#5a5a8a;">Free server: 1 shipper PDF per run</div>
+                        <div style="font-size:11px;margin-top:4px;color:#8a8ab0;">1 shipper PDF per check</div>
                         <input type="file" id="shipperPdf" accept=".pdf">
                     </div>
                     <div class="file-list" id="shipperFiles"></div>
@@ -433,7 +453,7 @@
         <div class="loading" id="loading">
             <div class="spinner"></div>
             <p>Analyzing your PDFs&hellip;</p>
-            <p class="ocr-note">Scanned shippers require OCR &mdash; this can take 30&ndash;90 seconds per PDF on the free server.</p>
+            <p class="ocr-note">Scanned shippers are read page by page (OCR) &mdash; this can take 30&ndash;90 seconds per PDF.</p>
         </div>
 
         <div class="results-section" id="results">
@@ -543,12 +563,10 @@
                 try {
                     data = JSON.parse(raw);
                 } catch (e) {
-                    const snippet = (raw || '').trim().slice(0, 120);
-                    const looksHtml = /<!DOCTYPE|<html/i.test(snippet) || resp.status === 502 || resp.status === 503;
+                    if (resp.status === 413) throw new Error('These files are too large to send together (the limit is 100 MB). Use a smaller shipper PDF.');
                     throw new Error(
-                        'Server returned a non-JSON response (worker timeout or out-of-memory). ' +
-                        'Try one smaller shipper PDF at a time. ' +
-                        (snippet ? 'Response starts with: ' + snippet : 'HTTP ' + resp.status)
+                        'The server did not answer normally (HTTP ' + resp.status + '). ' +
+                        'A large scan can take longer than the server allows: try a shipper PDF with fewer pages, or wait a minute and try again.'
                     );
                 }
 
@@ -579,6 +597,13 @@
             // OCR badge
             document.getElementById('ocrBadge').innerHTML =
                 d.ocr_used ? '<span class="ocr-badge">OCR was used on scanned shipper PDFs</span>' : '';
+            // a credit memo file that gave nothing makes paid cores look unclaimed
+            const errDiv = document.getElementById('errorMessage');
+            if (d.unread_credit_files && d.unread_credit_files.length) {
+                errDiv.textContent = 'No credit lines could be read from: ' + d.unread_credit_files.join(', ') +
+                    '. Cores credited on ' + (d.unread_credit_files.length === 1 ? 'that memo' : 'those memos') + ' will show below as unclaimed. Check the file and run again.';
+                errDiv.classList.add('show');
+            }
 
             // Stats
             document.getElementById('statShipped').textContent     = d.shipper_count;
@@ -628,7 +653,9 @@
             const blob = new Blob([csv], { type: 'text/csv' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'unclaimed_cores_' + new Date().toISOString().slice(0,10) + '.csv';
+            const now = new Date();     // the date here, not in London
+            const stamp = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            a.download = 'unclaimed_cores_' + stamp + '.csv';
             a.click();
         }
 

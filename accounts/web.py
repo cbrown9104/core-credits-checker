@@ -14,20 +14,24 @@ import threading
 import traceback
 from urllib.parse import urlsplit
 
-from flask import (Blueprint, abort, flash, g, jsonify, make_response,
-                   redirect, render_template, request, send_file, session,
-                   url_for)
+from flask import (Blueprint, Request, abort, flash, g, jsonify,
+                   make_response, redirect, render_template, request,
+                   send_file, session, url_for)
 from flask.sessions import SecureCookieSessionInterface
 from markupsafe import Markup
+
+from recon import jobs as recon_jobs
 
 from . import core, db, mailer, storage
 
 bp = Blueprint('accounts', __name__)
 
 INVITE_MINUTES = 72 * 60
-# Largest request body accepted from a signed-out visitor (a sign-in form
-# is a few hundred bytes).
-SIGNED_OUT_MAX_BODY = 64 * 1024
+# Every form on the site is a few hundred bytes. Only the two upload
+# calls may send more (up to the app's own limit); everything else is cut
+# off here, whether or not it says how big it is.
+SMALL_BODY = 64 * 1024
+UPLOADS = {'api_reconcile', 'check_cores'}
 
 # Pages a signed-out visitor may open.
 PUBLIC = {'index', 'static', 'favicon', 'accounts.login',
@@ -40,6 +44,19 @@ STORE_FREE = PUBLIC | {'accounts.owner', 'accounts.owner_create_store',
 
 _booted = None
 _boot_lock = threading.Lock()
+
+
+class SizedRequest(Request):
+    """A request whose body limit can be lowered for one request. Flask
+    enforces the limit as the body is read, also for bodies that do not
+    state their size (a proxy may pass a form on that way)."""
+    small_body = None
+
+    @property
+    def max_content_length(self):
+        if self.small_body is not None:
+            return self.small_body
+        return super().max_content_length
 
 UNAVAILABLE = ('The site cannot reach its saved records right now. Nothing '
                'was lost. Wait a minute, then try again.')
@@ -54,10 +71,9 @@ def base_url():
     request's Host header, so a forged header cannot redirect a link.
     Only local development (links printed to the console, or tests) may
     fall back to the address in the request."""
-    for key in ('APP_BASE_URL', 'RENDER_EXTERNAL_URL'):
-        v = os.environ.get(key, '').strip().rstrip('/')
-        if v:
-            return v
+    v = mailer.site_url()
+    if v:
+        return v
     if mailer.backend() in ('log', 'memory'):
         return request.host_url.rstrip('/')
     raise mailer.MailError('APP_BASE_URL is not set, so sign-in links '
@@ -116,10 +132,38 @@ def _refuse(code, title, message, link=None, link_label=None):
                            link_label=link_label), code
 
 
+# The page each form sits on. A refused click is sent back there: the
+# address the form posts to cannot be opened as a page.
+_FORM_PAGE = {
+    'accounts.users_add': '/users', 'accounts.users_invite': '/users',
+    'accounts.users_remove': '/users', 'accounts.store_settings': '/users',
+    'accounts.master_restore': '/history',
+    'accounts.owner_create_store': '/owner', 'accounts.owner_open': '/owner',
+    'accounts.switch_store': '/stores', 'accounts.logout': '/',
+    'accounts.login': '/login', 'api_reconcile': '/reconcile',
+    'check_cores': '/quick',
+}
+
+
+def _states_its_size():
+    """True when the request says up front how long its body is."""
+    stated = (request.environ.get('CONTENT_LENGTH') or '').strip()
+    return stated.isdigit() and 'chunked' not in request.headers.get(
+        'Transfer-Encoding', '').lower()
+
+
+def _came_from():
+    if request.method in ('GET', 'HEAD') or \
+            request.endpoint == 'accounts.login_link':
+        return request.path
+    return _FORM_PAGE.get(request.endpoint, '/')
+
+
 # Where a sign-in may send someone afterwards: the app's own pages only.
 # Never a sign-in link, sign-out or an action (a crafted ?next= must not be
 # able to walk a person into someone else's link).
-NEXT_PAGES = ('/reconcile', '/history', '/users', '/owner', '/stores')
+NEXT_PAGES = ('/reconcile', '/quick', '/history', '/users', '/owner',
+              '/stores')
 
 
 def _safe_next(target):
@@ -176,6 +220,9 @@ def _db_errors():
     return (db.Unavailable, psycopg.OperationalError)
 
 
+DB_ERRORS = _db_errors()
+
+
 def _unavailable(e=None):
     """The answer while the database cannot be reached: a plain page (or
     JSON for the app's own calls), never a stack trace. It touches neither
@@ -201,7 +248,10 @@ class _Sessions(SecureCookieSessionInterface):
     cookie-signing key has to be in place by then: load it here."""
 
     def open_session(self, app, request):
-        if enabled():
+        # (the health check and static files need neither the session nor
+        # the database, and must answer even before the first start-up)
+        if enabled() and request.path != '/healthz' and \
+                not request.path.startswith('/static/'):
             try:
                 _boot(app)
             except _db_errors() as e:
@@ -220,16 +270,23 @@ def _pick_store(user, stores):
     def mine(store_id):
         return next((s for s in stores if s['id'] == store_id), None)
 
-    for candidate in (session.get('sid'), user.get('last_store_id')):
-        if not candidate:
-            continue
-        m = mine(candidate)
+    # the store this browser has open
+    opened = session.get('sid')
+    if opened:
+        m = mine(opened)
         if m:
             return m, m['role']
         if user['is_owner']:
-            o = core.store_by_id(candidate)
+            # The owner looking into a store they are not on. It lasts
+            # for this browser session only: a later sign-in never lands
+            # the owner in someone else's store.
+            o = core.store_by_id(opened)
             if o:
                 return o, 'admin'
+    # else the store the person worked in last, if they are still on it
+    m = mine(user.get('last_store_id'))
+    if m:
+        return m, m['role']
     if len(stores) == 1:
         return stores[0], stores[0]['role']
     return None, None
@@ -265,6 +322,9 @@ def _before():
 
     public = ep is None or ep in PUBLIC
     changing = request.method not in ('GET', 'HEAD', 'OPTIONS')
+    if ep not in UPLOADS:
+        # set before anything reads the body; more than this is a 413
+        request.small_body = SMALL_BODY
 
     # Signed out: turned away before the request body is even read.
     if not g.user and not public:
@@ -275,26 +335,23 @@ def _before():
             else ''
         return redirect(url_for('accounts.login', next=_safe_next(nxt)
                                 or None))
-    if not g.user and changing:
-        # A sign-in form is tiny. A streamed upload (no stated size) or
-        # anything over the limit is refused unread.
-        size = request.content_length
-        # (gunicorn sets wsgi.input_terminated on every request, so the
-        # sign of a streamed body is that flag WITHOUT a Content-Length)
-        streamed = 'chunked' in request.headers.get(
-            'Transfer-Encoding', '').lower() or (
-            request.environ.get('wsgi.input_terminated') and
-            not request.environ.get('CONTENT_LENGTH'))
-        if streamed:
-            return _refuse(411, 'Not accepted', 'That request cannot be '
-                           'accepted.')
-        if (size or 0) > SIGNED_OUT_MAX_BODY:
-            return _refuse(413, 'Too large', 'That request is too large.')
+    if changing and ep not in UPLOADS and not _states_its_size():
+        # A form that does not say how big it is (a proxy may pass one on
+        # that way). Read it now, SMALL_BODY of it at most, then look for
+        # one byte more: if there is any, the limit was hit and this
+        # raises "too large" rather than going on with half a form.
+        request.form
+        request.stream.read(1)
 
     if changing and not _csrf_ok():
+        if ep == 'accounts.login_link' and g.user and core.just_used_by(
+                (request.view_args or {}).get('token'), g.user['id']):
+            # The second half of a double click on Continue: the first
+            # half already signed this browser in.
+            return redirect('/reconcile')
         return _refuse(400, 'Reload the page',
                        'This page was open too long. Reload it and try '
-                       'again.', request.path, 'Reload')
+                       'again.', _came_from(), 'Reload')
 
     if g.user:
         g.stores = core.stores_for(g.user['id'])
@@ -302,7 +359,8 @@ def _before():
         if store is not None:
             if session.get('sid') != store['id']:
                 session['sid'] = store['id']
-            if g.user.get('last_store_id') != store['id']:
+            if g.user.get('last_store_id') != store['id'] and \
+                    any(s['id'] == store['id'] for s in g.stores):
                 # where this person works: the next sign-in lands here
                 core.remember_store(g.user['id'], store['id'])
         elif 'sid' in session:
@@ -328,7 +386,7 @@ def _before():
                            'This page was showing a different store than '
                            'the one open now. Reload it, check the store '
                            'name at the top, and try again.',
-                           request.path, 'Reload')
+                           _came_from(), 'Reload')
     return None
 
 
@@ -390,11 +448,44 @@ def _size(v):
     return f'{max(0, round(n / 1024)):,} KB'
 
 
+_ERROR_PAGES = {
+    403: ('Admins only',
+          'Only a store admin can do that. Ask your store admin, or go back '
+          'to Full Reconciliation.', '/reconcile', 'Full Reconciliation'),
+    404: ('No such page', 'That page does not exist. Check the address, or '
+          'start again from the front.', '/', 'Go to the start'),
+    405: ('No such page', 'That address cannot be opened on its own. Start '
+          'again from the front.', '/', 'Go to the start'),
+    413: ('Too much at once', 'That was more than this form accepts.',
+          '/', 'Go to the start'),
+}
+TOO_BIG = ('These files are too large to send together (the limit is 100 '
+           'MB). Use fewer scans in one run.')
+
+
+def _error_page(e):
+    """The app's own page for "not allowed", "no such page" and the
+    like, instead of the web server's bare white one. With accounts off
+    nothing changes."""
+    if not enabled() or e.code not in _ERROR_PAGES:
+        return e
+    title, message, link, label = _ERROR_PAGES[e.code]
+    if _wants_json():
+        if e.code == 413:
+            message = TOO_BIG
+        return jsonify({'error': message}), e.code
+    return render_template('account/message.html', title=title,
+                           lines=[message], link=link,
+                           link_label=label), e.code
+
+
 def init_app(app):
     app.register_blueprint(bp)
+    app.request_class = SizedRequest
     app.session_interface = _Sessions()
-    secure = any(os.environ.get(k, '').strip().startswith('https://')
-                 for k in ('APP_BASE_URL', 'RENDER_EXTERNAL_URL'))
+    for code in _ERROR_PAGES:
+        app.register_error_handler(code, _error_page)
+    secure = mailer.site_url().startswith('https://')
     app.config.update(
         SESSION_COOKIE_NAME='pms_session',
         SESSION_COOKIE_HTTPONLY=True,
@@ -458,7 +549,9 @@ def login():
                                error=error, next=nxt), code
 
     if not core.valid_email(email):
-        return again('Enter your work email address.', 400)
+        return again('That does not look like an email address. Check it '
+                     'and try again.' if email else
+                     'Enter your work email address.', 400)
     try:
         if not mailer.configured():
             raise mailer.MailNotConfigured()
@@ -502,20 +595,25 @@ def login_link(token):
         # not burn it or sign anyone in. Only the Continue button does.
         user = core.peek_login_token(token)
         if not user:
+            if g.user and core.token_owner(token) == g.user['id']:
+                # their own link, opened again (or Back after signing
+                # in): they are already in
+                return redirect('/reconcile')
             return _link_dead()
         other = g.user['email'] if g.user and \
             g.user['id'] != user['id'] else ''
         return render_template('account/login_confirm.html',
                                email=user['email'], token=token,
                                signed_in_as=other)
-    user, store_id = core.use_login_token(token)
-    if not user or not core.can_sign_in(user):
+    user, store_id, sid = core.use_login_token(
+        token, browser=session.get('csrf') or '')
+    if not user:
         return _link_dead()
     nxt = _safe_next(session.get('next'))
     core.end_session(session.get('sx'))
     session.clear()
     session.permanent = True
-    session['sx'] = core.new_session(user['id'])
+    session['sx'] = sid
     # A plain sign-in goes back to the store the person worked in last
     # (see _pick_store). An invitation opens its store only when that is
     # the person's one store; someone already on another store is shown
@@ -563,9 +661,15 @@ def switch_store():
 def history():
     _need_accounts()
     sid = g.store['id']
+    runs = storage.list_runs(sid, 100)
+    for r in runs:
+        # Marked "running" but not working in this server any more: it
+        # ended while the database was away and could not be recorded.
+        if r['status'] == 'running' and not recon_jobs.is_live(r['id']):
+            r['status'], r['error'] = 'error', storage.STOPPED_UNSAVED
     return render_template(
         'account/history.html', active='history',
-        runs=storage.list_runs(sid, 100),
+        runs=runs,
         master=storage.current_master(sid),
         versions=storage.master_versions(sid, 15))
 
@@ -632,11 +736,12 @@ def users_add():
     _need_admin()
     role = request.form.get('role', 'user')
     try:
-        user, created = core.add_member(
+        user, created, changed = core.add_member(
             g.store['id'], request.form.get('email'), role, actor())
     except core.AccountError as e:
         flash(str(e), 'error')
         return redirect(url_for('accounts.users'))
+    what = 'an admin' if role == 'admin' else 'a user'
     if created:
         try:
             _invite(user, g.store)
@@ -645,9 +750,23 @@ def users_add():
             flash(f'{user["email"]} was added, but the invitation email '
                   f'did not go out. {e} They can still ask for a link on '
                   f'the sign-in page.', 'error')
+    elif not changed:
+        flash(f'{user["email"]} is already on this store as {what}. '
+              f'Nothing was sent. Use "Send new link" to email them a '
+              f'link.')
+    elif user['id'] == g.user['id'] and role != 'admin' and \
+            not g.user['is_owner']:
+        # they just gave up their own admin rights: the Users page is no
+        # longer theirs to open
+        return render_template(
+            'account/message.html', title='You are now a user',
+            lines=[f'You are no longer an admin of {g.store["name"]}. You '
+                   f'can still run reconciliations.',
+                   'Another admin can make you an admin again on the '
+                   'Users page.'],
+            link='/reconcile', link_label='Full Reconciliation')
     else:
-        flash(f'{user["email"]} is now '
-              f'{"an admin" if role == "admin" else "a user"}.')
+        flash(f'{user["email"]} is now {what}.')
     return redirect(url_for('accounts.users'))
 
 

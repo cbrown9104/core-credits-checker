@@ -51,7 +51,10 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     store_id    BIGINT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at  TIMESTAMPTZ NOT NULL,
-    used_at     TIMESTAMPTZ
+    used_at     TIMESTAMPTZ,
+    -- which browser used it (hash of its page token), so the second half
+    -- of a double click is recognised
+    used_by     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS login_tokens_user ON login_tokens (user_id, created_at);
 
@@ -130,6 +133,18 @@ CREATE TABLE IF NOT EXISTS run_files (
     PRIMARY KEY (run_id, name)
 );
 
+-- A result file's bytes, in pieces (one statement per piece keeps the
+-- database's memory use small whatever the size of the file).
+CREATE TABLE IF NOT EXISTS run_file_parts (
+    run_id      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    part        INTEGER NOT NULL,
+    content     BYTEA NOT NULL,
+    PRIMARY KEY (run_id, name, part),
+    FOREIGN KEY (run_id, name) REFERENCES run_files (run_id, name)
+        ON DELETE CASCADE
+);
+
 -- Who changed what on an account (users added/removed, masters restored...).
 CREATE TABLE IF NOT EXISTS audit_log (
     id          BIGSERIAL PRIMARY KEY,
@@ -149,4 +164,5 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS last_store_id BIGINT;
 ALTER TABLE memberships ADD COLUMN IF NOT EXISTS added_email TEXT NOT NULL DEFAULT '';
 ALTER TABLE memberships ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
 ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS store_id BIGINT;
+ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS used_by TEXT NOT NULL DEFAULT '';
 ALTER TABLE masters ADD COLUMN IF NOT EXISTS held_reason TEXT NOT NULL DEFAULT '';
