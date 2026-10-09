@@ -91,7 +91,7 @@
 
     {% block content %}{% endblock %}
 
-    <div class="footer">{% block footer %}{{ app_name }} &mdash; built for CDJR parts operations{% endblock %}</div>
+    <div class="footer">{% block footer %}{{ app_name }} &mdash; built for CDJR parts operations{% endblock %}{% include '_support.html' %}</div>
 </div>
 <script>
     // Two-click confirm for forms with data-confirm (no pop-up dialogs):

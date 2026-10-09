@@ -32,6 +32,7 @@
         <p>{{ message }}</p>
         <a class="btn" href="{{ again }}">Try again</a>
     </div>
+    {% if support_email %}<p class="sub" style="margin-top:22px;font-size:13px;">Still not working after a few minutes? Write to <a href="mailto:{{ support_email }}" style="color:#8ab4f8;">{{ support_email }}</a></p>{% endif %}
 </div>
 </body>
 </html>

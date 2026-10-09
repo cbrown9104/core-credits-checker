@@ -15,12 +15,14 @@ email provider.
 import datetime
 import json
 import os
+import re
 import threading
 import traceback
 import urllib.error
 import urllib.request
 
 RESEND_URL = 'https://api.resend.com/emails'
+EMAIL_SHAPE = re.compile(r'^[^@\s<>"\',;]+@[^@\s<>"\',;]+\.[A-Za-z]{2,}$')
 outbox = []
 # The most recent failure to send, for the owner's Stores page:
 # {'at': datetime, 'what': str}. Sign-in emails are sent in the background,
@@ -38,6 +40,12 @@ class MailNotConfigured(MailError):
 
 def app_name():
     return os.environ.get('APP_NAME', '').strip() or 'Parts Manager Solutions'
+
+
+def support_email():
+    """Where people are told to write for help (SUPPORT_EMAIL), or ''."""
+    v = os.environ.get('SUPPORT_EMAIL', '').strip()
+    return v if EMAIL_SHAPE.match(v) else ''
 
 
 def sender():
@@ -169,11 +177,12 @@ def send_sign_in(to, link, minutes):
 
 def send_invite(to, link, store_name, inviter, minutes):
     name = app_name()
+    site = link.split('/login/link/')[0]
     lines = [f'{inviter} added you to {store_name} on {name}.',
              'There is no password. Use this link to sign in.',
              f'It works once and expires in {minutes // 60} hours. After '
-             f'that, go to the sign-in page and ask for a new link with '
-             f'this email address.']
+             f'that, go to {site} and ask for a new link with this email '
+             f'address.']
     foot = 'If you were not expecting this, ignore this email.'
     text = '\n\n'.join(lines + [link, foot])
     send(to, f'You have been added to {store_name} on {name}', text,

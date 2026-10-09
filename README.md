@@ -76,6 +76,8 @@ signed-in service:
 | `APP_BASE_URL` | The public address, e.g. `https://partsmanagersolutions.com`. Emailed links point here. |
 | `RESEND_API_KEY` | API key for [Resend](https://resend.com), which sends the sign-in emails. |
 | `MAIL_FROM` | Sender, e.g. `Parts Manager Solutions <signin@partsmanagersolutions.com>`. The domain must be verified with Resend. |
+| `MAIL_REPLY_TO` | Optional. Where a reply to a sign-in email goes. |
+| `SUPPORT_EMAIL` | Optional. Shown at the foot of every page as where to write for help. |
 | `APP_NAME` | Name shown on the front page and in emails. Default `Parts Manager Solutions`. |
 
 The tables are created on first start (`accounts/schema.sql`) and brought up

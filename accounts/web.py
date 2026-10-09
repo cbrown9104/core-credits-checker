@@ -348,6 +348,7 @@ def _context():
     return {
         'accounts_on': on,
         'app_name': mailer.app_name(),
+        'support_email': mailer.support_email() if on else '',
         'me': getattr(g, 'user', None) if on else None,
         'store': getattr(g, 'store', None) if on else None,
         'my_stores': getattr(g, 'stores', []) if on else [],

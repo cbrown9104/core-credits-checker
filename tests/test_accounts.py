@@ -232,6 +232,25 @@ class TestSignIn(AccountsCase):
         r = c.post('/login', data=dict(form, pad='x' * 70000))
         self.assertEqual(r.status_code, 413)
 
+    def test_support_address_is_shown_only_when_set(self):
+        self.make_store('Help Store', 'hana@help.test')
+        hana = self.sign_in('hana@help.test')
+        pages = ('/', '/reconcile', '/history', '/users')
+        for path in pages:
+            self.assertNotIn(b'Need help?', hana.get(path).data, path)
+        os.environ['SUPPORT_EMAIL'] = 'help@partsmanagersolutions.com'
+        try:
+            for c, paths in ((hana, pages), (self.client(), ('/', '/login'))):
+                for path in paths:
+                    self.assertIn(
+                        b'mailto:help@partsmanagersolutions.com',
+                        c.get(path).data, path)
+            # anything that is not an email address is ignored
+            os.environ['SUPPORT_EMAIL'] = '"><script>alert(1)</script>'
+            self.assertNotIn(b'Need help?', hana.get('/history').data)
+        finally:
+            os.environ.pop('SUPPORT_EMAIL', None)
+
     def test_link_signs_in_once(self):
         self.make_store('Link Store', 'pat@linkstore.test')
         c = self.client()
