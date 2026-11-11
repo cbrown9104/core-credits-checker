@@ -74,6 +74,18 @@ class TestOpenMode(unittest.TestCase):
                                           data={}).status_code, 400)
         self.assertNotIn('Set-Cookie', home.headers)
 
+    def test_another_address_is_not_sent_anywhere(self):
+        saved = os.environ.get('APP_BASE_URL')
+        os.environ['APP_BASE_URL'] = 'https://site.example'
+        try:
+            r = self.client.get('/', base_url='https://other.example')
+        finally:
+            if saved is None:
+                os.environ.pop('APP_BASE_URL', None)
+            else:
+                os.environ['APP_BASE_URL'] = saved
+        self.assertEqual(r.status_code, 200)
+
     def test_memo_number_prefix_is_not_fixed(self):
         from app import parse_credits
         for prefix in ('03181000', '04220000', ''):
@@ -491,16 +503,71 @@ class TestSignIn(AccountsCase):
         mailer.outbox.clear()
         c = self.client()
         evil = 'http://evil.example'     # the whole exchange is forged
-        c.get('/login', base_url=evil)
-        with c.session_transaction(base_url=evil) as s:
-            token = s['csrf']
+        # the sign-in page is only ever served at the site's own address
+        r = c.get('/login', base_url=evil)
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers['Location'], 'http://localhost/login')
+        token, _ = self.guard(c)
         r = c.post('/login', data={'email': 'hal@host.test',
                                    'csrf_token': token}, base_url=evil)
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(mailer.outbox), 1)
-        text = mailer.outbox[0]['text']
-        self.assertIn('http://localhost/login/link/', text)
-        self.assertNotIn('evil.example', text)
+        self.assertEqual(r.status_code, 409)
+        self.assertNotIn(b'evil.example', r.data)
+        self.assertEqual(mailer.outbox, [])
+
+    def test_another_address_of_the_site_leads_to_its_own_address(self):
+        from accounts import mailer
+        self.make_store('Moved Store', 'mo@moved.test')
+        other = 'https://old-name.example'
+        c = self.client()
+        # a page: sent on to the same page, with what came after the ?
+        for method in (c.get, c.head):
+            r = method('/login?next=/history', base_url=other)
+            self.assertEqual(r.status_code, 302)
+            self.assertEqual(r.headers['Location'],
+                             'http://localhost/login?next=/history')
+            self.assertNotIn('Set-Cookie', r.headers)
+        self.assertEqual(c.get('/', base_url=other).headers['Location'],
+                         'http://localhost/')
+        # an emailed link opened there is sent on too, and not used up
+        self.post(c, '/login', {'email': 'mo@moved.test'})
+        link = self.last_link('mo@moved.test')
+        r = c.get(link, base_url=other)
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers['Location'], 'http://localhost' + link)
+        # a form posted from a page loaded there: told where the site is,
+        # and nothing is done with it
+        mailer.outbox.clear()
+        token, _ = self.guard(c)
+        r = c.post('/login', data={'email': 'mo@moved.test',
+                                   'csrf_token': token}, base_url=other)
+        self.assertEqual(r.status_code, 409)
+        self.assertIn(b'This site is at http://localhost now', r.data)
+        self.assertIn(b'href="http://localhost/login"', r.data)
+        self.assertEqual(mailer.outbox, [])
+        r = c.post(link, data={'csrf_token': token}, base_url=other)
+        self.assertEqual(r.status_code, 409)
+        self.assertIn(b'href="http://localhost' + link.encode(), r.data)
+        # the app's own calls get the same answer in their own form, so a
+        # page left open there shows it instead of waiting for ever
+        for r in (c.get('/api/jobs/' + '0' * 32, base_url=other),
+                  c.post('/api/check-cores', base_url=other)):
+            self.assertEqual(r.status_code, 409)
+            self.assertIn('http://localhost', r.get_json()['error'])
+        # the health check answers at any address
+        self.assertEqual(c.get('/healthz', base_url=other).data, b'ok')
+        # the site's own address in capitals is still its own address
+        self.assertEqual(c.get('/login',
+                               base_url='http://LOCALHOST').status_code, 200)
+        # The web host's proxy speaks plain http to the app. That is not
+        # another address: sent on, the request would come back for ever.
+        os.environ['APP_BASE_URL'] = 'https://localhost'
+        try:
+            self.assertEqual(c.get('/login').status_code, 200)
+        finally:
+            os.environ['APP_BASE_URL'] = 'http://localhost'
+        # the link still works at the site's own address
+        self.use_link(c, link)
+        self.assertEqual(c.get('/reconcile').status_code, 200)
 
     def test_no_configured_address_means_no_links_in_production(self):
         from accounts import mailer
