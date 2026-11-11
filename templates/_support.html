@@ -1,3 +1,5 @@
-{# One line saying where to write for help. Shown only when SUPPORT_EMAIL
-   is set (and accounts are on). #}
+{# The foot of every page. One line saying where to write for help, shown
+   only when SUPPORT_EMAIL is set, and the Terms and Privacy links. Both
+   only with accounts on. #}
 {% if support_email %}<br>Need help? Write to <a href="mailto:{{ support_email }}" style="color:#8ab4f8;">{{ support_email }}</a>{% endif %}
+{% if accounts_on %}<br><a href="/terms" style="color:#8ab4f8;">Terms</a> &middot; <a href="/privacy" style="color:#8ab4f8;">Privacy</a>{% endif %}

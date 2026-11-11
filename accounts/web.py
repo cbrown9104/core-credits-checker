@@ -37,11 +37,12 @@ UPLOADS = {'api_reconcile', 'check_cores'}
 # Pages a signed-out visitor may open.
 PUBLIC = {'index', 'static', 'favicon', 'accounts.login',
           'accounts.login_link', 'accounts.logout', 'accounts.healthz',
-          'accounts.signup'}
+          'accounts.signup', 'accounts.terms', 'accounts.privacy'}
 # Pages that are about the person, not about one store. They work with no
 # store picked yet, and posts to them are not tied to a store.
 STORE_FREE = PUBLIC | {'accounts.owner', 'accounts.owner_create_store',
-                       'accounts.owner_open', 'accounts.switch_store',
+                       'accounts.owner_open', 'accounts.owner_approve',
+                       'accounts.owner_delete', 'accounts.switch_store',
                        'accounts.choose_store'}
 
 _booted = None
@@ -141,6 +142,7 @@ _FORM_PAGE = {
     'accounts.users_remove': '/users', 'accounts.store_settings': '/users',
     'accounts.master_restore': '/history',
     'accounts.owner_create_store': '/owner', 'accounts.owner_open': '/owner',
+    'accounts.owner_approve': '/owner', 'accounts.owner_delete': '/owner',
     'accounts.switch_store': '/stores', 'accounts.logout': '/',
     'accounts.login': '/login', 'accounts.signup': '/signup',
     'api_reconcile': '/reconcile',
@@ -403,6 +405,15 @@ def _before():
             return redirect(url_for('accounts.owner'))
         return _refuse(403, 'No store yet', 'Your email is not on a store '
                        'right now. Ask your store admin to add you again.')
+    if g.store.get('waiting') and not g.user['is_owner']:
+        # A store that signed itself up. Nobody works in it, and it sends
+        # no invitations, until the owner of the service approves it.
+        other = len(g.stores) > 1
+        return _refuse(403, 'Waiting for approval',
+                       f'{g.store["name"]} is signed up. It is waiting for '
+                       f'approval. Its admin gets an email when it opens.',
+                       url_for('accounts.choose_store') if other else None,
+                       'Your other stores' if other else None)
     if changing:
         # The page says which store it was showing. If another tab has
         # switched stores since, stop instead of acting on the wrong one.
@@ -441,6 +452,7 @@ def _context():
         'csrf_token': csrf_token if on else (lambda: ''),
         'form_guard': form_guard if on else (lambda: ''),
         'signups_open': on and signups_open(),
+        'signup_approval': on and approval_needed(),
     }
 
 
@@ -636,7 +648,8 @@ def login_link(token):
                                signup=user['signup_name'])
     try:
         user, store_id, sid, made = core.use_login_token(
-            token, browser=session.get('csrf') or '')
+            token, browser=session.get('csrf') or '',
+            hold=approval_needed())
     except core.AccountError:
         return _refuse(409, 'That store is already set up',
                        'Someone set that store up while your link was '
@@ -680,12 +693,22 @@ def signups_open():
     return os.environ.get('SIGNUPS', '').strip().lower() != 'off'
 
 
+def approval_needed():
+    """A store that signs itself up waits for the owner's approval, unless
+    SIGNUP_APPROVAL is set to off."""
+    return os.environ.get('SIGNUP_APPROVAL', '').strip().lower() != 'off'
+
+
 @bp.route('/signup', methods=['GET', 'POST'])
 def signup():
     """A store signs itself up. Nothing is made here. The emailed link
     makes the store, with the person as its admin, when they use it (see
     core.use_login_token). The email carries nothing the person typed: a
-    stranger must not be able to send their own words from this site."""
+    stranger must not be able to send their own words from this site.
+
+    The page answers the same for a dealer code that already has a store.
+    The email tells that person, so the page does not show which dealer
+    codes are customers."""
     _need_accounts()
     if not signups_open():
         abort(404)
@@ -715,16 +738,34 @@ def signup():
                                 INVITE_MINUTES)
     except core.AccountError as e:
         return again(str(e), 400)
-    mailer.in_background(mailer.send_signup, email,
-                         f'{base}/login/link/{token}', INVITE_MINUTES)
+    if token:
+        mailer.in_background(mailer.send_signup, email,
+                             f'{base}/login/link/{token}', INVITE_MINUTES)
+    else:
+        mailer.in_background(mailer.send_signup_taken, email,
+                             f'{base}/login')
     return render_template(
         'account/message.html', title='Check your email',
-        lines=[f'A link to finish is on its way to {email}.',
-               'Open it on this computer and press Continue. Your store is '
-               'set up then, and you are its admin.',
+        lines=[f'An email is on its way to {email}. It tells you what to '
+               f'do next.',
+               'For a new store it has a link. Open the link on this '
+               'computer and press Continue.',
                f'The link works once and expires in {INVITE_MINUTES // 60} '
                f'hours. Nothing after a few minutes? Check the junk '
                f'folder.'])
+
+
+# ── terms and privacy ───────────────────────────────────────────────────
+@bp.route('/terms')
+def terms():
+    _need_accounts()
+    return render_template('account/terms.html')
+
+
+@bp.route('/privacy')
+def privacy():
+    _need_accounts()
+    return render_template('account/privacy.html')
 
 
 @bp.route('/stores')
@@ -953,3 +994,58 @@ def owner_open(store_id):
         abort(404)
     _open_store(store_id)
     return redirect(url_for('accounts.history'))
+
+
+@bp.route('/owner/approve/<int:store_id>', methods=['POST'])
+def owner_approve(store_id):
+    """Open a store that signed itself up, and tell its admin."""
+    _need_accounts()
+    _need_owner()
+    try:
+        store, admins = core.approve_store(store_id, actor())
+    except core.AccountError as e:
+        flash(str(e), 'error')
+        return redirect(url_for('accounts.owner'))
+    try:
+        link = f'{base_url()}/login'
+        for to in admins:
+            mailer.in_background(mailer.send_store_approved, to,
+                                 store['name'], link)
+        flash(f'{store["name"]} is approved. An email went to '
+              f'{", ".join(admins)}.')
+    except mailer.MailError as e:
+        flash(f'{store["name"]} is approved, but the email to its admin '
+              f'did not go out. {e}', 'error')
+    return redirect(url_for('accounts.owner'))
+
+
+@bp.route('/owner/delete/<int:store_id>', methods=['GET', 'POST'])
+def owner_delete(store_id):
+    """Remove a store and all that it saved. Nothing brings a store back,
+    so the page shows what goes and asks for the store's name, typed."""
+    _need_accounts()
+    _need_owner()
+    store = next((s for s in core.all_stores() if s['id'] == store_id),
+                 None)
+    if not store:
+        abort(404)
+    error = ''
+    if request.method == 'POST':
+        if any(r['status'] == 'running' and recon_jobs.is_live(r['id'])
+               for r in storage.list_runs(store_id)):
+            # its results would have no store to be saved to
+            error = ('A run is working in that store now. Wait until it '
+                     'ends, then delete the store.')
+        else:
+            try:
+                core.delete_store(store_id, request.form.get('confirm'),
+                                  actor())
+            except core.AccountError as e:
+                error = str(e)
+            else:
+                if session.get('sid') == store_id:
+                    session.pop('sid')
+                flash(f'{store["name"]} was deleted.')
+                return redirect(url_for('accounts.owner'))
+    return render_template('account/owner_delete.html', active='owner',
+                           s=store, error=error), 400 if error else 200

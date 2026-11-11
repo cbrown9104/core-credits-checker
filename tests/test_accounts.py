@@ -66,8 +66,9 @@ class TestOpenMode(unittest.TestCase):
         self.assertIn(b'Quick Check', home.data)
         self.assertNotIn(b'Sign out', home.data)
         self.assertEqual(self.client.get('/reconcile').status_code, 200)
-        for path in ('/login', '/signup', '/history', '/users', '/owner',
-                     '/stores', '/master/download'):
+        self.assertNotIn(b'/terms', home.data)
+        for path in ('/login', '/signup', '/terms', '/privacy', '/history',
+                     '/users', '/owner', '/stores', '/master/download'):
             self.assertEqual(self.client.get(path).status_code, 404, path)
         # posting needs no token when accounts are off
         self.assertEqual(self.client.post('/api/reconcile',
@@ -628,11 +629,9 @@ class TestSignUp(AccountsCase):
         mailer.outbox.clear()
         self.post(self.client(), '/login', {'email': 'sam@selfserve.test'})
         self.assertEqual(mailer.outbox, [])
+        self.assertIn(b'It opens when we approve it', look.data)
         # Continue: the store, its admin and the sign-in, in one step
         self.use_link(c, link)
-        page = c.get('/reconcile')
-        self.assertEqual(page.status_code, 200)
-        self.assertIn(b'Self Serve Motors', page.data)
         store = db.one("SELECT * FROM stores WHERE name = "
                        "'Self Serve Motors'")
         self.assertEqual(store['dealer_code'], '41234')
@@ -641,42 +640,126 @@ class TestSignUp(AccountsCase):
                       (store['id'],))
         self.assertEqual([(w['email'], w['role']) for w in who],
                          [('sam@selfserve.test', 'admin')])
-        self.assertEqual(c.get('/users').status_code, 200)
+        # the store waits for the owner: nobody works in it, and it
+        # sends no invitations
+        self.assertTrue(store['waiting'])
+        for path in ('/reconcile', '/quick', '/history', '/users'):
+            page = c.get(path)
+            self.assertEqual(page.status_code, 403, path)
+            self.assertIn(b'Waiting for approval', page.data)
+            self.assertIn(b'Self Serve Motors', page.data)
+        r = self.start_recon(c, {'dc_text': 'x', 'asof': '2026-10-05'})
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('waiting for approval', r.get_json()['error'])
+        self.assertEqual(self.post(c, '/users/add', {
+            'email': 'pal@selfserve.test', 'role': 'user'}).status_code, 403)
         # the owner is told once, and the store is in the owner's list
         told = [m for m in mailer.outbox if m['to'] == OWNER]
         self.assertEqual(len(told), 1)
+        self.assertIn('waiting for approval', told[0]['subject'])
         self.assertIn('Self Serve Motors', told[0]['subject'])
         self.assertIn('sam@selfserve.test', told[0]['text'])
         self.assertIn('41234', told[0]['text'])
         owner = self.sign_in(OWNER)
-        self.assertIn(b'Self Serve Motors', owner.get('/owner').data)
+        page = owner.get('/owner')
+        self.assertIn(b'Self Serve Motors', page.data)
+        self.assertIn(b'Waiting', page.data)
+        approve = f'/owner/approve/{store["id"]}'
+        self.assertIn(approve.encode(), page.data)
+        # only the owner approves
+        self.assertEqual(self.post(c, approve).status_code, 404)
+        mailer.outbox.clear()
+        r = self.post(owner, approve, follow_redirects=True)
+        self.assertIn(b'Self Serve Motors is approved', r.data)
+        self.assertNotIn(approve.encode(), r.data)
+        mail = [m for m in mailer.outbox if m['to'] == 'sam@selfserve.test']
+        self.assertEqual(len(mail), 1)
+        self.assertIn('is approved', mail[0]['subject'])
+        self.assertIn('http://localhost/login', mail[0]['text'])
+        # the store is open now
+        page = c.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Self Serve Motors', page.data)
+        self.assertEqual(c.get('/users').status_code, 200)
+        r = self.post(owner, approve, follow_redirects=True)
+        self.assertIn(b'not waiting for approval', r.data)
         # the link is dead now, and sign-in works the usual way
         self.assertEqual(self.client().get(link).status_code, 410)
         sam = self.sign_in('sam@selfserve.test')
         self.assertIn(b'Self Serve Motors', sam.get('/reconcile').data)
 
-    def test_what_the_sign_up_page_refuses(self):
-        from accounts import mailer
+    def test_a_store_opens_at_once_when_approval_is_off(self):
+        from accounts import db, mailer
+        os.environ['SIGNUP_APPROVAL'] = 'off'
+        try:
+            c = self.client()
+            self.assertNotIn(b'approve each new store', c.get('/signup').data)
+            self.sign_up(c, 'Open Now Motors', '41235', 'ona@opennow.test')
+            self.use_link(c, self.last_link('ona@opennow.test'))
+            page = c.get('/reconcile')
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(b'Open Now Motors', page.data)
+            self.assertFalse(db.one("SELECT waiting FROM stores WHERE name "
+                                    "= 'Open Now Motors'")['waiting'])
+            told = [m for m in mailer.outbox if m['to'] == OWNER]
+            self.assertEqual(len(told), 1)
+            self.assertIn('New store signed up', told[0]['subject'])
+        finally:
+            os.environ.pop('SIGNUP_APPROVAL', None)
+
+    def test_a_dealer_code_that_has_a_store_is_answered_by_email(self):
+        from accounts import core, db, mailer
         self.make_store('Taken Motors', 'tia@taken.test', dealer='55555')
         mailer.outbox.clear()
+        c = self.client()
+        new = self.sign_up(c, 'New Motors', '55556', 'ann@new.test')
+        # the page says the same for a dealer code that has a store,
+        # however the second person spells the name of the store
+        for name in ('Taken Motors', 'taken motors inc'):
+            mailer.outbox.clear()
+            r = self.sign_up(c, name, '55555', 'ann@new.test')
+            self.assertEqual(r.data, new.data)
+            self.assertNotIn(b'already', r.data)
+            # the email tells them, and has no link that makes a store
+            mail = [m for m in mailer.outbox if m['to'] == 'ann@new.test']
+            self.assertEqual(len(mail), 1)
+            self.assertIn('already set up', mail[0]['text'])
+            self.assertNotIn('/login/link/', mail[0]['text'])
+            self.assertNotIn('aken', mail[0]['subject'] + mail[0]['text'] +
+                             mail[0]['html'])
+        self.assertEqual(db.one("SELECT count(*) AS n FROM stores WHERE "
+                                "dealer_code = '55555'")['n'], 1)
+        # these emails count toward the limit for the day too
+        asked = db.one('SELECT count(*) AS n FROM login_tokens WHERE '
+                       'signup_name IS NOT NULL')['n']
+        self.assertGreaterEqual(asked, 3)
+        saved, core.MAX_SIGNUPS_PER_DAY = core.MAX_SIGNUPS_PER_DAY, asked
+        try:
+            mailer.outbox.clear()
+            r = self.post(self.client(), '/signup', {
+                'name': 'Taken Motors', 'dealer_code': '55555',
+                'email': 'bob@new.test'})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn(b'paused for today', r.data)
+            self.assertEqual(mailer.outbox, [])
+        finally:
+            core.MAX_SIGNUPS_PER_DAY = saved
+
+    def test_what_the_sign_up_page_refuses(self):
+        from accounts import mailer
         c = self.client()
         new = {'name': 'New Motors', 'dealer_code': '11111',
                'email': 'ann@new.test'}
         for change, said in (
                 ({'name': ' '}, b'Enter the store name.'),
                 ({'dealer_code': 'none'}, b'Enter your dealer code'),
-                ({'email': 'not-an-email'}, b'Enter a valid work email'),
-                # a store that is already set up is not set up twice,
-                # however the second person spells its name
-                ({'dealer_code': '55555'}, b'already set up'),
-                ({'name': 'taken motors', 'dealer_code': '55555'},
-                 b'already set up')):
+                ({'email': 'not-an-email'}, b'Enter a valid work email')):
             r = self.post(c, '/signup', dict(new, **change))
             self.assertEqual(r.status_code, 400, change)
             self.assertIn(said, r.data)
         # what was typed is still in the form
-        self.assertIn(b'value="taken motors"', r.data)
-        self.assertIn(b'value="ann@new.test"', r.data)
+        self.assertIn(b'value="New Motors"', r.data)
+        self.assertIn(b'value="11111"', r.data)
         # a post without the page token does nothing
         self.assertEqual(c.post('/signup', data=new).status_code, 400)
         self.assertEqual(mailer.outbox, [])
@@ -723,7 +806,7 @@ class TestSignUp(AccountsCase):
         self.assertEqual(c.post(second, data={
             'csrf_token': token}).status_code, 302)
         page = c.get('/reconcile')
-        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.status_code, 403)
         self.assertIn(b'Twice Motors', page.data)
         # the other link died with the one that was used
         self.assertEqual(self.client().get(first).status_code, 410)
@@ -741,6 +824,16 @@ class TestSignUp(AccountsCase):
         page = c.get('/stores')
         self.assertIn(b'First Of Two', page.data)
         self.assertIn(b'Second Of Two', page.data)
+        # the first store works as before, and the new one waits
+        self.assertEqual(c.get('/reconcile').status_code, 200)
+        from accounts import db
+        second = db.one("SELECT id FROM stores WHERE name = "
+                        "'Second Of Two'")['id']
+        self.post(c, '/switch-store', {'store_id': second})
+        page = c.get('/reconcile')
+        self.assertEqual(page.status_code, 403)
+        self.assertIn(b'Second Of Two', page.data)
+        self.assertIn(b'Your other stores', page.data)
 
     def test_a_store_set_up_while_the_link_waited_is_not_made_twice(self):
         c = self.client()
@@ -753,6 +846,26 @@ class TestSignUp(AccountsCase):
         self.assertIn(b'already set up', r.data)
         self.assertEqual(self.stores_named('Race Motors'), 0)
         self.assertEqual(c.get('/reconcile').status_code, 302)
+
+    def test_terms_and_privacy_are_open_to_all(self):
+        c = self.client()
+        for path, title in (('/terms', b'Terms of Service'),
+                            ('/privacy', b'Privacy Policy')):
+            page = c.get(path)
+            self.assertEqual(page.status_code, 200, path)
+            self.assertIn(title, page.data)
+            self.assertIn(b'Zero Redundant LLC', page.data)
+            # every page links to them at its foot
+            self.assertIn(f'href="{path}"'.encode(), c.get('/').data)
+            self.assertIn(f'href="{path}"'.encode(), c.get('/login').data)
+            # and the sign-up form says that signing up agrees to them
+            self.assertIn(f'href="{path}"'.encode(), c.get('/signup').data)
+        self.assertIn(b'you agree to the', c.get('/signup').data)
+        # signed in, they are still there
+        self.make_store('Reader Motors', 'rea@reader.test')
+        rea = self.sign_in('rea@reader.test')
+        self.assertEqual(rea.get('/terms').status_code, 200)
+        self.assertIn(b'href="/privacy"', rea.get('/reconcile').data)
 
     def test_the_sign_up_page_can_be_closed(self):
         os.environ['SIGNUPS'] = 'off'
@@ -770,6 +883,89 @@ class TestSignUp(AccountsCase):
 
 
 class TestStores(AccountsCase):
+    def test_the_owner_deletes_a_store(self):
+        from accounts import db, mailer, web
+        gone = self.make_store('Gone Motors', 'gus@gone.test', '66661')
+        kept = self.make_store('Kept Motors', 'kim@kept.test', '66662')
+        gus = self.sign_in('gus@gone.test')
+        kim = self.sign_in('kim@kept.test')
+        # kim is on both stores, and gus only on the one that goes
+        self.assertEqual(self.post(gus, '/users/add', {
+            'email': 'kim@kept.test', 'role': 'user'}).status_code, 302)
+        _, job = self.first_run(gus)
+        self.assertEqual(job['status'], 'done', job)
+
+        def saved(store):
+            return [db.one(f'SELECT count(*) AS n FROM {t} WHERE store_id '
+                           f'= %s', (store['id'],))['n']
+                    for t in ('memberships', 'masters', 'runs')]
+        self.assertEqual(saved(gone), [2, 1, 1])
+        files = db.one('SELECT count(*) AS n FROM run_files')['n']
+        self.assertGreater(files, 0)
+
+        page = f'/owner/delete/{gone["id"]}'
+        # only the owner sees the page or uses it
+        self.assertEqual(gus.get(page).status_code, 404)
+        self.assertEqual(self.post(gus, page, {
+            'confirm': 'Gone Motors'}).status_code, 404)
+        owner = self.sign_in(OWNER)
+        self.assertIn(page.encode(), owner.get('/owner').data)
+        r = owner.get(page)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'Delete Gone Motors?', r.data)
+        self.assertIn(b'66661', r.data)
+        # the name has to be typed
+        for typed in ('', 'Kept Motors', 'Gone'):
+            r = self.post(owner, page, {'confirm': typed})
+            self.assertEqual(r.status_code, 400, typed)
+            self.assertIn(b'Type the name of the store', r.data)
+        self.assertEqual(saved(gone), [2, 1, 1])
+        # a run that is working stops the delete
+        was = web.recon_jobs.is_live
+        db.execute("UPDATE runs SET status = 'running' WHERE store_id = %s",
+                   (gone['id'],))
+        web.recon_jobs.is_live = lambda job_id: True
+        try:
+            r = self.post(owner, page, {'confirm': 'Gone Motors'})
+        finally:
+            web.recon_jobs.is_live = was
+        self.assertEqual(r.status_code, 400)
+        self.assertIn(b'A run is working in that store now', r.data)
+        self.assertEqual(saved(gone), [2, 1, 1])
+        # a run that the server lost (marked running, not working) does
+        # not: the store and all that it saved go
+        r = self.post(owner, page, {'confirm': ' gone  motors '},
+                      follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'Gone Motors was deleted.', r.data)
+        self.assertNotIn(page.encode(), r.data)
+        self.assertEqual(saved(gone), [0, 0, 0])
+        self.assertEqual(db.one('SELECT count(*) AS n FROM run_files')['n'],
+                         0)
+        self.assertIsNone(db.one('SELECT 1 AS x FROM stores WHERE id = %s',
+                                 (gone['id'],)))
+        self.assertEqual(owner.get(page).status_code, 404)
+        told = db.one("SELECT detail, user_email FROM audit_log WHERE "
+                      "action = 'store_deleted' AND store_id = %s",
+                      (gone['id'],))
+        self.assertEqual(told['user_email'], OWNER)
+        self.assertEqual(told['detail']['name'], 'Gone Motors')
+        # the other store is as it was
+        self.assertEqual(saved(kept), [1, 0, 0])
+        # gus has no store left: signed out everywhere, and no new link
+        r = gus.get('/reconcile')
+        self.assertEqual(r.status_code, 302)
+        self.assertIn('/login', r.headers['Location'])
+        mailer.outbox.clear()
+        self.post(self.client(), '/login', {'email': 'gus@gone.test'})
+        self.assertEqual(mailer.outbox, [])
+        # kim keeps the other store
+        page = kim.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Kept Motors', page.data)
+        # and the dealer code is free for a new store
+        self.make_store('Gone Motors', 'new@gone.test', '66661')
+
     def test_owner_pages_are_for_the_owner_only(self):
         self.make_store('Owner Test Store', 'amy@ots.test')
         amy = self.sign_in('amy@ots.test')

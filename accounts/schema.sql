@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS stores (
     dealer_code     TEXT NOT NULL DEFAULT '',
     threshold_days  INTEGER NOT NULL DEFAULT 60,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by      BIGINT
+    created_by      BIGINT,
+    -- A store that signed itself up waits here until the owner of the
+    -- service approves it. Only the owner can open a waiting store.
+    waiting         BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- A person. Email is stored lowercased. is_owner = runs the service and can
@@ -172,3 +175,4 @@ ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS used_by TEXT NOT NULL DEFAULT 
 ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS signup_name TEXT;
 ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS signup_dealer TEXT NOT NULL DEFAULT '';
 ALTER TABLE masters ADD COLUMN IF NOT EXISTS held_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS waiting BOOLEAN NOT NULL DEFAULT FALSE;

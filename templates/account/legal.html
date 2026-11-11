@@ -1,0 +1,25 @@
+{% extends 'account/base.html' %}
+{# The layout of the Terms page and the Privacy page. #}
+{% block head %}
+<style>
+    .legal { max-width: 760px; margin: 0 auto 22px; }
+    .legal h2 { margin-top: 22px; }
+    .legal h2:first-of-type { margin-top: 6px; }
+    .legal p, .legal li { font-size: 14px; color: #c0c0e0; line-height: 1.6; margin-bottom: 10px; }
+    .legal ul { padding-left: 22px; margin-bottom: 4px; }
+    .legal .dim { color: #8888aa; font-size: 13px; }
+</style>
+{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>{% block legal_title %}{% endblock %}</h1>
+    <p>Zero Redundant LLC &mdash; Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+<div class="card legal">
+    <p class="dim">Last updated November 11, 2026</p>
+    {% block legal %}{% endblock %}
+    <p class="dim" style="margin:22px 0 0;"><a class="plain" href="{{ url_for('accounts.terms') }}">Terms</a> &middot; <a class="plain" href="{{ url_for('accounts.privacy') }}">Privacy</a> &middot; <a class="plain" href="/">Home</a></p>
+</div>
+{% endblock %}

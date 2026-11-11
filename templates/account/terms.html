@@ -1,0 +1,64 @@
+{% extends 'account/legal.html' %}
+{% set contact = support_email or 'support@zeroredundant.com' %}
+{% block title %}Terms — {{ app_name }}{% endblock %}
+{% block legal_title %}Terms of Service{% endblock %}
+{% block legal %}
+<p>These terms are an agreement between you and Zero Redundant LLC, a Texas limited liability company ("Zero Redundant", "we", "us"). They cover Core Credits Checker and the other tools at zeroredundant.com (the "service"). When you sign up or sign in, you agree to them. If you use the service for a dealership or another business, you agree for that business, and you confirm that you are allowed to.</p>
+
+<h2>1. What the service does</h2>
+<p>The service reads the documents that you upload, for example core credit memos, signed shipper scans and exports from the manufacturer's dealer portal. It keeps a core returns master for your store and reports the core credits that look unpaid.</p>
+<p>The results depend on the documents that you give it. They can be wrong or incomplete. The service files nothing for you. Check the results before you send a credit request or change your books.</p>
+
+<h2>2. Accounts</h2>
+<ul>
+    <li>Each person signs in with their own work email. There are no passwords. We email a link that signs you in. Do not forward a sign-in link.</li>
+    <li>The admin of a store decides who is on the store, and removes people who leave. You are responsible for what the people on your store do in the service.</li>
+    <li>We can approve, refuse or close a store.</li>
+    <li>Tell us at once if you think that someone used your store without permission.</li>
+</ul>
+
+<h2>3. Your data</h2>
+<ul>
+    <li>The documents that you upload, and the results made from them, stay yours.</li>
+    <li>You give us permission to store and process them to run the service for your store, to keep the service working and secure, and to fix problems. We use them for nothing else.</li>
+    <li>We do not sell your data. We do not show the data of one store to another store.</li>
+    <li>You confirm that you have the right to upload the documents that you upload.</li>
+    <li>The <a class="plain" href="{{ url_for('accounts.privacy') }}">Privacy Policy</a> says what we collect and how we handle it.</li>
+</ul>
+
+<h2>4. What you must not do</h2>
+<ul>
+    <li>Try to reach the data of another store.</li>
+    <li>Upload a document that you have no right to share, or that is unlawful.</li>
+    <li>Attack, probe or overload the service, or get around its limits.</li>
+    <li>Resell the service, or let people outside your store use your sign-in.</li>
+    <li>Use the service to send email that people did not ask for.</li>
+</ul>
+
+<h2>5. Price</h2>
+<p>The service is free during the pilot. Before a charge starts, we tell the admin of each store by email. You are not charged unless you agree to the price first.</p>
+
+<h2>6. No link to a manufacturer</h2>
+<p>Zero Redundant is an independent company. It is not affiliated with, endorsed by or sponsored by Stellantis, FCA US LLC, Mopar or any other vehicle manufacturer. Their names, and the names of their systems, are used only to describe the documents that the service reads.</p>
+
+<h2>7. Changes to the service</h2>
+<p>The service is new. We can change it, add or remove features, or stop it. We work to keep it running, but we do not promise that it is always available or free of errors. Keep your own copies of your documents and of the results that you rely on.</p>
+
+<h2>8. Ending</h2>
+<p>You can stop at any time. The admin of a store can ask us to delete the store and its data: write to <a class="plain" href="mailto:{{ contact }}">{{ contact }}</a>. We can suspend or close a store that breaks these terms, or that puts the service or other stores at risk.</p>
+
+<h2>9. No warranty</h2>
+<p>The service is provided "as is" and "as available". To the extent that the law allows, we disclaim all warranties, express or implied. This includes warranties of merchantability, of fitness for a particular purpose and of non-infringement.</p>
+
+<h2>10. Limit of liability</h2>
+<p>To the extent that the law allows, Zero Redundant is not liable for indirect, incidental, special, consequential or punitive damages, or for lost profits, lost credits or lost data, that come from the service. Our total liability for all claims about the service is limited to the larger of two amounts: what you paid us for the service in the 12 months before the claim, or 100 US dollars.</p>
+
+<h2>11. Law</h2>
+<p>The law of Texas governs these terms. A dispute about them goes to the state or federal courts in Texas.</p>
+
+<h2>12. Changes to these terms</h2>
+<p>We can update these terms. We post the new version on this page with a new date. For a change that matters, we also email the admin of each store. If you continue to use the service after a change, you accept the change.</p>
+
+<h2>13. Contact</h2>
+<p>Zero Redundant LLC, <a class="plain" href="mailto:{{ contact }}">{{ contact }}</a>.</p>
+{% endblock %}

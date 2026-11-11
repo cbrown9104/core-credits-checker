@@ -20,7 +20,8 @@
         <input type="email" id="email" name="email" value="{{ email }}" required autocomplete="email" inputmode="email" placeholder="you@yourstore.com">
         <button class="btn-primary wide" type="submit">Email me a link to finish</button>
     </form>
-    <p class="note" style="margin:16px 0 0;">There is no password. We email you a link. Your store is set up when you use it, and you are its admin: you add the rest of your people on the Users page.</p>
+    <p class="note" style="margin:16px 0 0;">There is no password. We email you a link. Your store is set up when you use it, and you are its admin: you add the rest of your people on the Users page.{% if signup_approval %} We approve each new store before it opens.{% endif %}</p>
+    <p class="note" style="margin:10px 0 0;">When you sign up, you agree to the <a class="plain" href="{{ url_for('accounts.terms') }}">Terms</a> and the <a class="plain" href="{{ url_for('accounts.privacy') }}">Privacy Policy</a>.</p>
 </div>
 <p class="note" style="text-align:center;">Already set up? <a class="plain" href="{{ url_for('accounts.login') }}">Sign in</a></p>
 {% endblock %}
