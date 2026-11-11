@@ -1,0 +1,26 @@
+{% extends 'account/base.html' %}
+{% block title %}Delete {{ s.name }} — {{ app_name }}{% endblock %}
+{% block subtitle %}Delete a store{% endblock %}
+{% block content %}
+{% if error %}<div class="error-msg" role="alert">{{ error }}</div>{% endif %}
+<div class="card" style="max-width:620px;margin-left:auto;margin-right:auto;">
+    <h2>Delete {{ s.name }}?</h2>
+    <p class="note">{% if s.dealer_code %}Dealer {{ s.dealer_code }}. {% endif %}{% if s.waiting %}This store is waiting for approval. {% endif %}This removes the store and all that it saved:</p>
+    <div class="facts">
+        <div class="fact"><div class="n">{{ s.user_count }}</div><div class="l">People</div></div>
+        <div class="fact"><div class="n">{{ s.run_count }}</div><div class="l">Runs</div></div>
+        <div class="fact"><div class="n">{{ '{:,}'.format(s.master_rows) if s.master_rows is not none else 'None' }}</div><div class="l">Master rows</div></div>
+        <div class="fact"><div class="n">{{ s.stored_bytes|size }}</div><div class="l">Stored</div></div>
+    </div>
+    <p class="note">Its people cannot sign in after this, unless they are on another store. Nothing brings a deleted store back.</p>
+    <form method="post" action="{{ url_for('accounts.owner_delete', store_id=s.id) }}">
+        {{ form_guard() }}
+        <label class="title" for="confirm">Type the store name to delete it</label>
+        <input type="text" id="confirm" name="confirm" autocomplete="off" required autofocus>
+        <div style="margin-top:16px;">
+            <button class="btn-small armed" type="submit" style="padding:11px 18px;font-size:14px;">Delete this store</button>
+            <a class="btn-small" href="{{ url_for('accounts.owner') }}" style="padding:11px 18px;font-size:14px;margin-left:8px;">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

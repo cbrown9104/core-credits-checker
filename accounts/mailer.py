@@ -207,3 +207,72 @@ def send_invite(to, link, store_name, inviter, minutes):
     send(to, f'Sign in to Core Credits Checker for {store_name}', text,
          _wrap(f'{store_name} on Core Credits Checker', lines, link,
                'Sign in', foot))
+
+
+def send_signup(to, link, minutes):
+    """The link that finishes a sign-up. Nothing that the person typed
+    goes in it (no store name): the address is not confirmed yet."""
+    name = app_name()
+    lines = [f'Use this link to finish setting up your store on Core '
+             f'Credits Checker ({name}).',
+             'Your store is set up when you use it, and you are its admin. '
+             'There is no password.',
+             f'It works once and expires in {minutes // 60} hours.']
+    foot = ('If you did not ask to sign up, ignore this email. Nothing is '
+            'set up without this link.')
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, f'Finish setting up your store on {name}', text,
+         _wrap('Finish setting up your store', lines, link, 'Finish',
+               foot))
+
+
+def send_signup_taken(to, link):
+    """The answer to a sign-up for a dealer code that already has a
+    store. It goes by email and not on the page: the page must not show
+    which dealer codes are customers. Nothing that the person typed goes
+    in it."""
+    name = app_name()
+    lines = [f'You asked to sign up a store on Core Credits Checker '
+             f'({name}). A store with that dealer code is already set up.',
+             'Ask the admin of your store to add you on their Users page. '
+             'Then sign in with this email address. There is no password.']
+    if support_email():
+        lines.append(f'Nobody at your store knows about it? Write to '
+                     f'{support_email()}.')
+    foot = 'If you did not ask to sign up, ignore this email.'
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, f'Your store is already on {name}', text,
+         _wrap('Your store is already set up', lines, link, 'Sign in',
+               foot))
+
+
+def send_new_store(to, store, admin_email):
+    """Tell the owner that a store signed itself up."""
+    lines = [f'{admin_email} signed up {store["name"]} (dealer code '
+             f'{store["dealer_code"]}) on Core Credits Checker.']
+    if store.get('waiting'):
+        subject = f'New store waiting for approval: {store["name"]}'
+        title = 'A store is waiting for approval'
+        lines.append('Nobody can work in it until you approve it on your '
+                     'Stores page. You can also delete it there.')
+    else:
+        subject = f'New store signed up: {store["name"]}'
+        title = 'A store signed up'
+        lines.append('The store is on your Stores page.')
+    foot = 'You get this email because you run the service.'
+    link = f'{site_url()}/owner'
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, subject, text, _wrap(title, lines, link, 'Open Stores', foot))
+
+
+def send_store_approved(to, store_name, link):
+    """Tell a store's admin that the owner approved the store."""
+    lines = [f'{store_name} is approved on Core Credits Checker '
+             f'({app_name()}). You can sign in and start now.',
+             'You are its admin: you add the rest of your people on the '
+             'Users page. There is no password. The sign-in page emails '
+             'you a link.']
+    foot = 'You get this email because you signed this store up.'
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, f'{store_name} is approved', text,
+         _wrap(f'{store_name} is approved', lines, link, 'Sign in', foot))

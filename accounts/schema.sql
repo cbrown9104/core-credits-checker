@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS stores (
     dealer_code     TEXT NOT NULL DEFAULT '',
     threshold_days  INTEGER NOT NULL DEFAULT 60,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_by      BIGINT
+    created_by      BIGINT,
+    -- A store that signed itself up waits here until the owner of the
+    -- service approves it. Only the owner can open a waiting store.
+    waiting         BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- A person. Email is stored lowercased. is_owner = runs the service and can
@@ -54,7 +57,11 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     used_at     TIMESTAMPTZ,
     -- which browser used it (hash of its page token), so the second half
     -- of a double click is recognised
-    used_by     TEXT NOT NULL DEFAULT ''
+    used_by     TEXT NOT NULL DEFAULT '',
+    -- A link from the sign-up page carries the store it sets up. The store
+    -- is made when the link is used, not before.
+    signup_name   TEXT,
+    signup_dealer TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS login_tokens_user ON login_tokens (user_id, created_at);
 
@@ -165,4 +172,7 @@ ALTER TABLE memberships ADD COLUMN IF NOT EXISTS added_email TEXT NOT NULL DEFAU
 ALTER TABLE memberships ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
 ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS store_id BIGINT;
 ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS used_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS signup_name TEXT;
+ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS signup_dealer TEXT NOT NULL DEFAULT '';
 ALTER TABLE masters ADD COLUMN IF NOT EXISTS held_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS waiting BOOLEAN NOT NULL DEFAULT FALSE;

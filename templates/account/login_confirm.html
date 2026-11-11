@@ -13,6 +13,7 @@
     <div class="error-msg">This browser is signed in as <strong>{{ signed_in_as }}</strong>. Continuing signs it in as a different person: <strong>{{ email }}</strong>. If you did not ask for this link, close this page.</div>
     {% endif %}
     <p class="note">Signing in as <strong>{{ email }}</strong>.</p>
+    {% if signup %}<p class="note">Continue sets up <strong>{{ signup }}</strong> with you as its admin.{% if signup_approval %} It opens when we approve it.{% endif %}</p>{% endif %}
     <form method="post" action="{{ url_for('accounts.login_link', token=token) }}">
         {{ form_guard() }}
         <button class="btn-primary wide" type="submit" autofocus>Continue</button>

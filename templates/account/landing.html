@@ -23,11 +23,16 @@
     <h1>Find the core credits<br>you were never paid.</h1>
     <p>Core Credits Checker reads your signed shipper scans and weekly credit memos, keeps your core returns master current, and hands you the unpaid list with a credit request ready to send.</p>
     <a class="btn-primary" href="{{ url_for('accounts.login') }}">Sign in</a>
+    {% if signups_open %}<a class="btn-primary" href="{{ url_for('accounts.signup') }}" style="margin-left:10px;">Sign up your store</a>{% endif %}
 </div>
 <div class="steps">
     <div class="step"><div class="k">Each week</div><h3>Upload the paperwork</h3><p>This week's credit memo and signed shipper scans. A payment export from the factory portal is optional.</p></div>
     <div class="step"><div class="k">The app</div><h3>Matches every ticket</h3><p>Credits are matched to shipments by control ticket and every memo is tied out to its net credit amount.</p></div>
     <div class="step"><div class="k">You get</div><h3>The unpaid list and the request</h3><p>What is still unpaid, how old it is, and a credit request with the signed pages marked.</p></div>
 </div>
+{% if signups_open %}
+<p class="pilot">New here? Sign up your store with your work email. Already on a store? Sign in with the email you were added at.</p>
+{% else %}
 <p class="pilot">Access is by invitation during the pilot. Sign in with the work email you were invited at.</p>
+{% endif %}
 {% endblock %}

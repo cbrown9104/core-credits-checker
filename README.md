@@ -41,12 +41,30 @@ You get back:
 Off by default. Set `DATABASE_URL` (Postgres) and the app turns into a
 signed-in service:
 
-- **Front page** with a Sign in button. Nothing else is reachable signed out.
+- **Front page** with Sign in and Sign up your store. Nothing else is
+  reachable signed out.
   Signed in, the site's address opens Full Reconciliation (the weekly run);
   Quick Check is at `/quick`.
 - **Sign-in by emailed link.** No passwords. A link works once and expires in
-  20 minutes; the browser stays signed in for 30 days. Only invited emails get
-  a link.
+  20 minutes; the browser stays signed in for 30 days. Only a person on a
+  store gets a sign-in link.
+- **Sign-up.** A store signs itself up at `/signup` with its name, its dealer
+  code and a work email. The emailed link (72 hours) makes the store when the
+  person uses it, with that person as its admin. No store is made before that,
+  and the email carries nothing that the person typed. The owner gets an email
+  for each new store. At most 50 sign-up emails go out in a day.
+- **Approval.** A store that signed itself up is marked Waiting. Nobody can
+  work in it, and it sends no invitations, until the owner approves it on the
+  Stores page. Its admin then gets an email.
+- **One store for a dealer code.** A sign-up for a dealer code that already
+  has a store makes nothing. The page answers the same as for a new store, and
+  the email tells the person to ask the admin of their store. The page thus
+  does not show which dealer codes are customers.
+- **Delete a store.** The owner deletes a store on the Stores page. The page
+  shows what goes (people, runs, master, files) and asks for the name of the
+  store, typed. Nothing brings a deleted store back.
+- **Terms and Privacy** pages at `/terms` and `/privacy`, linked at the foot of
+  every page and on the sign-up form.
 - **The account is the store.** Everyone on a store sees the same master,
   history and results. One store can never open another store's runs, files
   or master.
@@ -81,6 +99,8 @@ signed-in service:
 | `MAIL_REPLY_TO` | Optional. Where a reply to a sign-in email goes. |
 | `SUPPORT_EMAIL` | Optional. Shown at the foot of every page as where to write for help. |
 | `APP_NAME` | Name shown on the front page and in emails. Default `Parts Manager Solutions`. |
+| `SIGNUPS` | Optional. `off` closes the sign-up page. The owner then adds each store on the Stores page. |
+| `SIGNUP_APPROVAL` | Optional. `off` opens a store that signs itself up at once, without the owner's approval. |
 
 The tables are created on first start (`accounts/schema.sql`) and brought up
 to date whenever that file changes. The key that signs the session cookie is

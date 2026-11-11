@@ -1,0 +1,27 @@
+{% extends 'account/base.html' %}
+{% block title %}Sign up — {{ app_name }}{% endblock %}
+{% block container_class %} narrow{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Sign up your store</h1>
+    <p>{{ app_name }} — Core Credits Checker</p>
+</div>
+{% endblock %}
+{% block content %}
+{% if error %}<div class="error-msg" role="alert">{{ error }}</div>{% endif %}
+<div class="card">
+    <form method="post" action="{{ url_for('accounts.signup') }}" autocomplete="on">
+        {{ form_guard() }}
+        <label class="title" for="name">Store name</label>
+        <input type="text" id="name" name="name" value="{{ name }}" maxlength="120" required autofocus autocomplete="organization" placeholder="Your dealership">
+        <label class="title" for="dealer_code" style="margin-top:14px;">Dealer code</label>
+        <input type="text" id="dealer_code" name="dealer_code" value="{{ dealer_code }}" maxlength="8" required inputmode="numeric" autocomplete="off">
+        <label class="title" for="email" style="margin-top:14px;">Your work email</label>
+        <input type="email" id="email" name="email" value="{{ email }}" required autocomplete="email" inputmode="email" placeholder="you@yourstore.com">
+        <button class="btn-primary wide" type="submit">Email me a link to finish</button>
+    </form>
+    <p class="note" style="margin:16px 0 0;">There is no password. We email you a link. Your store is set up when you use it, and you are its admin: you add the rest of your people on the Users page.{% if signup_approval %} We approve each new store before it opens.{% endif %}</p>
+    <p class="note" style="margin:10px 0 0;">When you sign up, you agree to the <a class="plain" href="{{ url_for('accounts.terms') }}">Terms</a> and the <a class="plain" href="{{ url_for('accounts.privacy') }}">Privacy Policy</a>.</p>
+</div>
+<p class="note" style="text-align:center;">Already set up? <a class="plain" href="{{ url_for('accounts.login') }}">Sign in</a></p>
+{% endblock %}

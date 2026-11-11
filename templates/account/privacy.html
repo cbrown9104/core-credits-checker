@@ -1,0 +1,73 @@
+{% extends 'account/legal.html' %}
+{% set contact = support_email or 'support@zeroredundant.com' %}
+{% block title %}Privacy — {{ app_name }}{% endblock %}
+{% block legal_title %}Privacy Policy{% endblock %}
+{% block legal %}
+<p>This policy says what Zero Redundant LLC ("we", "us") collects when you use Core Credits Checker at zeroredundant.com (the "service"), and what we do with it. The service is for businesses, such as dealership parts departments. It is not for consumers.</p>
+
+<h2>What we collect</h2>
+<ul>
+    <li><strong>Account details.</strong> Your work email address, the name and dealer code of your store, your role on the store, and who added you and when.</li>
+    <li><strong>What you upload.</strong> The documents that you give the service: credit memos, shipper scans, exports from the dealer portal, and your core returns master.</li>
+    <li><strong>What the service makes.</strong> Your saved master, the numbers of each run, and the result files of each run. A result file can contain pages of the documents that you uploaded.</li>
+    <li><strong>Activity.</strong> Who ran what and when, and the changes to who is on a store.</li>
+    <li><strong>Sign-in records.</strong> Each request for a sign-in link, with the email address that was typed and the network address (IP address) that it came from. Also the browsers that are signed in.</li>
+    <li><strong>Server logs.</strong> Our hosting provider records each request to the site: the time, the page, the network address and the type of browser.</li>
+</ul>
+
+<h2>What we do not collect</h2>
+<ul>
+    <li>Passwords. There are none.</li>
+    <li>Payment card numbers.</li>
+    <li>Data from advertising or tracking tools. The site has none.</li>
+</ul>
+
+<h2>Cookies</h2>
+<p>The site sets one cookie. It keeps your browser signed in for up to 30 days and protects the forms on the site. There are no advertising cookies and no tracking cookies.</p>
+
+<h2>How we use it</h2>
+<ul>
+    <li>To run the service for your store.</li>
+    <li>To sign you in, and to keep accounts safe. For example, we limit how many sign-in links one address can ask for.</li>
+    <li>To fix problems and to make the service better.</li>
+    <li>To email you about your store and about the service.</li>
+</ul>
+
+<h2>Who sees it</h2>
+<ul>
+    <li><strong>The people on your store.</strong> Everyone on a store sees the master, the history and the results of that store. The admin of a store sees who is on it.</li>
+    <li><strong>Other stores.</strong> Never.</li>
+    <li><strong>Us.</strong> The people who run Zero Redundant can open a store to support it and to fix problems.</li>
+    <li><strong>Our service providers.</strong> Render hosts the site and its database in the United States. Resend delivers our email. They handle the data for us.</li>
+    <li><strong>The law.</strong> We give out information when a law or a court order makes us.</li>
+    <li><strong>A new owner.</strong> If the business is sold or merged, the data can pass to the new owner under this policy.</li>
+</ul>
+<p>We do not sell personal information.</p>
+
+<h2>How long we keep it</h2>
+<ul>
+    <li>Your uploads are worked on in a temporary folder on the server. The folder is cleared regularly. Uploads are not kept there.</li>
+    <li>Your saved masters and the history of your runs stay until your store is deleted. The result files are kept for the most recent runs of a store (about two years of weekly runs).</li>
+    <li>Sign-in records are kept for a few days. Sign-in links are removed about a week after they expire.</li>
+    <li>Server logs are kept by the hosting provider for a limited time.</li>
+    <li>When a store is deleted, we delete its masters, its runs, its result files and its list of people from the live database. Copies in the backups of the hosting provider go away on the schedule of the provider.</li>
+</ul>
+
+<h2>Security</h2>
+<p>The site uses an encrypted connection (HTTPS). A sign-in link works once and expires. We store only a scrambled form of each sign-in link and of each signed-in session, not the link itself. The data of each store is kept apart from the data of every other store. No system is perfectly secure, and we cannot promise that this one is.</p>
+
+<h2>Your choices</h2>
+<p>The admin of a store can remove a person from the store at any time. To get a copy of your information, to correct it, or to have your information or your store deleted, write to <a class="plain" href="mailto:{{ contact }}">{{ contact }}</a>.</p>
+
+<h2>Children</h2>
+<p>The service is for businesses. It is not for people under 18.</p>
+
+<h2>Where the data is</h2>
+<p>The data is stored in the United States.</p>
+
+<h2>Changes to this policy</h2>
+<p>We post each new version on this page with a new date.</p>
+
+<h2>Contact</h2>
+<p>Zero Redundant LLC, <a class="plain" href="mailto:{{ contact }}">{{ contact }}</a>.</p>
+{% endblock %}

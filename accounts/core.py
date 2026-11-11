@@ -25,6 +25,9 @@ MAX_PER_EMAIL_AND_IP = 5
 MAX_PER_EMAIL = 15
 MAX_PER_IP = 30
 WINDOW_MINUTES = 15
+# The sign-up page emails an address that nobody has confirmed. This is
+# the most of those emails in a day, whoever asks and from wherever.
+MAX_SIGNUPS_PER_DAY = 50
 
 EMAIL_RE = re.compile(r'^[^@\s<>"\',;]+@[^@\s<>"\',;]+\.[A-Za-z]{2,}$')
 
@@ -197,6 +200,34 @@ def _clean_name(name):
     return name
 
 
+def _new_store(conn, name, dealer_code, admin_email, actor, waiting=False):
+    """A store and its first admin, made inside the caller's transaction.
+    waiting: the store stays shut until the owner approves it."""
+    # one at a time, so a double click cannot make the store twice
+    conn.execute('SELECT pg_advisory_xact_lock(712006)')
+    twin = conn.execute(
+        'SELECT 1 AS x FROM stores WHERE lower(name) = lower(%s) AND '
+        'dealer_code = %s LIMIT 1',
+        (name, clean_dealer(dealer_code))).fetchone()
+    if twin:
+        raise AccountError(
+            f'There is already a store named {name} with that dealer '
+            f'code. It is in the list below.')
+    store = conn.execute(
+        'INSERT INTO stores (name, dealer_code, created_by, waiting) '
+        'VALUES (%s, %s, %s, %s) RETURNING *',
+        (name, clean_dealer(dealer_code), actor['id'],
+         waiting)).fetchone()
+    user = ensure_user(admin_email, conn)
+    conn.execute(
+        'INSERT INTO memberships (user_id, store_id, role, added_by, '
+        'added_email) VALUES (%s, %s, %s, %s, %s)',
+        (user['id'], store['id'], 'admin', actor['id'], actor['email']))
+    _audit(conn, store['id'], actor, 'store_created',
+           {'name': name, 'admin': user['email']})
+    return store, user
+
+
 def create_store(name, dealer_code, admin_email, actor):
     """New store with its first admin. Returns (store, admin_user)."""
     name = _clean_name(name)
@@ -204,28 +235,7 @@ def create_store(name, dealer_code, admin_email, actor):
         raise AccountError('Enter a valid email for the store\'s first '
                            'admin.')
     with db.connect() as conn:
-        # one at a time, so a double click cannot make the store twice
-        conn.execute('SELECT pg_advisory_xact_lock(712006)')
-        twin = conn.execute(
-            'SELECT 1 AS x FROM stores WHERE lower(name) = lower(%s) AND '
-            'dealer_code = %s LIMIT 1',
-            (name, clean_dealer(dealer_code))).fetchone()
-        if twin:
-            raise AccountError(
-                f'There is already a store named {name} with that dealer '
-                f'code. It is in the list below.')
-        store = conn.execute(
-            'INSERT INTO stores (name, dealer_code, created_by) '
-            'VALUES (%s, %s, %s) RETURNING *',
-            (name, clean_dealer(dealer_code), actor['id'])).fetchone()
-        user = ensure_user(admin_email, conn)
-        conn.execute(
-            'INSERT INTO memberships (user_id, store_id, role, added_by, '
-            'added_email) VALUES (%s, %s, %s, %s, %s)',
-            (user['id'], store['id'], 'admin', actor['id'], actor['email']))
-        _audit(conn, store['id'], actor, 'store_created',
-               {'name': name, 'admin': user['email']})
-    return store, user
+        return _new_store(conn, name, dealer_code, admin_email, actor)
 
 
 def update_store(store_id, name, dealer_code, threshold_days, actor):
@@ -241,6 +251,61 @@ def update_store(store_id, name, dealer_code, threshold_days, actor):
         _audit(conn, store_id, actor, 'store_updated',
                {'name': name, 'dealer_code': clean_dealer(dealer_code),
                 'threshold_days': th})
+
+
+def approve_store(store_id, actor):
+    """Open a store that signed itself up. Returns (store, the emails of
+    its admins)."""
+    with db.connect() as conn:
+        store = conn.execute(
+            'UPDATE stores SET waiting = FALSE WHERE id = %s AND waiting '
+            'RETURNING *', (store_id,)).fetchone()
+        if not store:
+            raise AccountError('That store is not waiting for approval.')
+        admins = [r['email'] for r in conn.execute(
+            "SELECT u.email FROM memberships m JOIN users u ON u.id = "
+            "m.user_id WHERE m.store_id = %s AND m.role = 'admin' "
+            "ORDER BY u.email", (store_id,)).fetchall()]
+        _audit(conn, store_id, actor, 'store_approved',
+               {'name': store['name']})
+    return store, admins
+
+
+def delete_store(store_id, typed_name, actor):
+    """Remove a store and all that it saved: its masters, its runs and
+    their files, and each person's place on it. Nothing brings it back,
+    so the caller must type the store's name. Returns the store.
+
+    A person who is on another store keeps that store. A person with no
+    store left is signed out everywhere, as in remove_member."""
+    with db.connect() as conn:
+        _lock_store(conn, store_id)
+        store = conn.execute('SELECT * FROM stores WHERE id = %s',
+                             (store_id,)).fetchone()
+        typed = re.sub(r'\s+', ' ', typed_name or '').strip()
+        if typed.lower() != store['name'].lower():
+            raise AccountError('Type the name of the store as it is shown, '
+                               'then press Delete.')
+        people = conn.execute('SELECT u.* FROM memberships m JOIN users u '
+                              'ON u.id = m.user_id WHERE m.store_id = %s',
+                              (store_id,)).fetchall()
+        # the masters, runs, run files and memberships go with the store
+        conn.execute('DELETE FROM stores WHERE id = %s', (store_id,))
+        conn.execute('UPDATE login_tokens SET used_at = now() WHERE '
+                     'store_id = %s AND used_at IS NULL', (store_id,))
+        conn.execute('UPDATE users SET last_store_id = NULL WHERE '
+                     'last_store_id = %s', (store_id,))
+        for person in people:
+            if not can_sign_in(person, conn):
+                conn.execute('UPDATE login_tokens SET used_at = now() '
+                             'WHERE user_id = %s AND used_at IS NULL',
+                             (person['id'],))
+                conn.execute('DELETE FROM sessions WHERE user_id = %s',
+                             (person['id'],))
+        _audit(conn, store_id, actor, 'store_deleted',
+               {'name': store['name'], 'dealer_code': store['dealer_code'],
+                'people': [p['email'] for p in people]})
+    return store
 
 
 def members(store_id):
@@ -389,14 +454,59 @@ def new_login_token(user_id, minutes=TOKEN_MINUTES, store_id=None):
     return token
 
 
+def new_signup(name, dealer_code, email, minutes):
+    """A link token for a store that someone asks to set up on the sign-up
+    page. No store is made here. use_login_token makes it, with this
+    person as its admin, when the emailed link is used: until then the
+    email is not known to be theirs.
+
+    Returns None when the dealer code already has a store. The caller
+    then tells the person by email, never on the page: the page must not
+    show which dealer codes are customers. Each request counts toward
+    MAX_SIGNUPS_PER_DAY, because each one sends an email."""
+    name = _clean_name(name)
+    dealer = clean_dealer(dealer_code)
+    if not dealer:
+        raise AccountError('Enter your dealer code (numbers only).')
+    if not valid_email(email):
+        raise AccountError('Enter a valid work email address.')
+    token = secrets.token_urlsafe(32)
+    expires = _now() + datetime.timedelta(minutes=minutes)
+    with db.connect() as conn:
+        asked = conn.execute(
+            "SELECT count(*) AS n FROM login_tokens WHERE signup_name IS "
+            "NOT NULL AND created_at > now() - interval '1 day'"
+        ).fetchone()['n']
+        if asked >= MAX_SIGNUPS_PER_DAY:
+            raise AccountError('Sign-ups are paused for today. Try again '
+                               'tomorrow.')
+        # One store for a dealer code, however its name is spelled: a
+        # second person from the same store must not start a second one.
+        taken = conn.execute('SELECT 1 AS x FROM stores WHERE dealer_code '
+                             '= %s LIMIT 1', (dealer,)).fetchone()
+        # shortcut: the link needs a person, so their row is made before
+        # the email is confirmed. A person on no store cannot sign in.
+        # Clear such rows if they ever pile up.
+        user = ensure_user(email, conn)
+        # A request for a taken dealer code is kept too, as a link that
+        # has expired already, so that it counts toward the day's limit.
+        conn.execute(
+            'INSERT INTO login_tokens (user_id, token_hash, expires_at, '
+            'signup_name, signup_dealer) VALUES (%s, %s, %s, %s, %s)',
+            (user['id'], _hash(token), _now() if taken else expires, name,
+             dealer))
+    return None if taken else token
+
+
 def peek_login_token(token):
-    """The user a still-valid link belongs to, without using it up."""
+    """The user a still-valid link belongs to, without using it up. For a
+    link from the sign-up page, signup_name is the store it sets up."""
     if not token or len(token) > 200:
         return None
     return db.one(
-        'SELECT u.* FROM login_tokens t JOIN users u ON u.id = t.user_id '
-        'WHERE t.token_hash = %s AND t.used_at IS NULL AND '
-        't.expires_at > now()', (_hash(token),))
+        'SELECT u.*, t.signup_name FROM login_tokens t JOIN users u '
+        'ON u.id = t.user_id WHERE t.token_hash = %s AND t.used_at IS NULL '
+        'AND t.expires_at > now()', (_hash(token),))
 
 
 def token_owner(token):
@@ -414,27 +524,38 @@ def token_owner(token):
 SAME_PRESS_SECONDS = 60
 
 
-def use_login_token(token, browser=''):
+def use_login_token(token, browser='', hold=False):
     """Use a link up and start the session, in one step (so a link is
     never spent without a session to show for it).
 
-    Returns (user, store_id, session_id) or (None, None, None) if the link
+    Returns (user, store_id, session_id, made) or four Nones if the link
     was already used, expired or never existed. A link works exactly once,
     and using one retires every other link that person still had.
+
+    A link from the sign-up page (see new_signup) makes its store here,
+    in the same step, with the person as its admin. made is that store,
+    or None for every other link. hold makes that store wait for the
+    owner's approval. AccountError means that the store was set up by
+    someone else since. The link is then not used.
 
     browser identifies the browser pressing Continue (its page token). A
     second press from that same browser within SAME_PRESS_SECONDS, which
     is what a double click sends, gets a session too.
     """
-    nothing = (None, None, None)
+    nothing = (None, None, None, None)
     if not token or len(token) > 200:
         return nothing
     mark = _hash(browser) if browser else ''
     with db.connect() as conn:
-        owner = conn.execute('SELECT user_id FROM login_tokens WHERE '
-                             'token_hash = %s', (_hash(token),)).fetchone()
+        owner = conn.execute('SELECT user_id, signup_name FROM '
+                             'login_tokens WHERE token_hash = %s',
+                             (_hash(token),)).fetchone()
         if not owner:
             return nothing
+        if owner['signup_name']:
+            # the same order as create_store: the store lock, then the
+            # person, so the two cannot wait on each other
+            conn.execute('SELECT pg_advisory_xact_lock(712006)')
         # One sign-in per person at a time: two of their links pressed at
         # the same moment take turns instead of blocking each other.
         conn.execute('SELECT id FROM users WHERE id = %s FOR UPDATE',
@@ -442,7 +563,8 @@ def use_login_token(token, browser=''):
         row = conn.execute(
             'UPDATE login_tokens SET used_at = now(), used_by = %s WHERE '
             'token_hash = %s AND used_at IS NULL AND expires_at > now() '
-            'RETURNING user_id, store_id', (mark, _hash(token))).fetchone()
+            'RETURNING id, user_id, store_id, signup_name, signup_dealer',
+            (mark, _hash(token))).fetchone()
         if row:
             conn.execute('UPDATE login_tokens SET used_at = now() WHERE '
                          'user_id = %s AND used_at IS NULL',
@@ -458,6 +580,19 @@ def use_login_token(token, browser=''):
         user = conn.execute(
             'UPDATE users SET last_login_at = now() WHERE id = %s '
             'RETURNING *', (row['user_id'],)).fetchone()
+        made = None
+        if row.get('signup_name'):
+            if conn.execute('SELECT 1 AS x FROM stores WHERE dealer_code = '
+                            '%s LIMIT 1', (row['signup_dealer'],)).fetchone():
+                raise AccountError('A store with that dealer code is '
+                                   'already set up.')
+            made, _ = _new_store(conn, row['signup_name'],
+                                 row['signup_dealer'], user['email'], user,
+                                 waiting=hold)
+            # a second press of Continue finds the store on the link
+            conn.execute('UPDATE login_tokens SET store_id = %s WHERE '
+                         'id = %s', (made['id'], row['id']))
+            row = dict(row, store_id=made['id'])
         if not can_sign_in(user, conn):
             return nothing
         sid = secrets.token_urlsafe(32)
@@ -466,7 +601,7 @@ def use_login_token(token, browser=''):
             '(%s, %s, %s)', (_hash(sid), user['id'], _now() +
                              datetime.timedelta(days=SESSION_DAYS)))
         conn.execute('DELETE FROM sessions WHERE expires_at < now()')
-    return user, row['store_id'], sid
+    return user, row['store_id'], sid, made
 
 
 def just_used_by(token, user_id):

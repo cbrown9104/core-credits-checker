@@ -21,6 +21,7 @@
 
 <div class="card">
     <h2>Stores</h2>
+    {% if signups_open %}<p class="note">A store can sign itself up on the front page. {% if signup_approval %}It is marked Waiting, and nobody can work in it, until you approve it here.{% else %}It opens at once, and you get an email.{% endif %}</p>{% endif %}
     {% if stores %}
     <div class="table-wrap">
         <table>
@@ -28,7 +29,7 @@
             <tbody>
             {% for s in stores %}
             <tr>
-                <td><strong>{{ s.name }}</strong></td>
+                <td><strong>{{ s.name }}</strong>{% if s.waiting %} <span class="pill amber">Waiting</span>{% endif %}</td>
                 <td>{{ s.dealer_code }}</td>
                 <td class="num">{{ s.user_count }}</td>
                 <td class="num">{{ s.run_count }}</td>
@@ -37,10 +38,17 @@
                 <td class="num">{% if s.unpaid_count is not none %}{{ s.unpaid_count }} &middot; {{ s.unpaid_amount|money }}{% endif %}</td>
                 <td class="num">{{ s.stored_bytes|size }}</td>
                 <td class="nowrap">
+                    {% if s.waiting %}
+                    <form method="post" action="{{ url_for('accounts.owner_approve', store_id=s.id) }}">
+                        {{ form_guard() }}
+                        <button class="btn-small" type="submit">Approve</button>
+                    </form>
+                    {% endif %}
                     <form method="post" action="{{ url_for('accounts.owner_open', store_id=s.id) }}">
                         {{ form_guard() }}
                         <button class="btn-small" type="submit">Open</button>
                     </form>
+                    <a class="btn-small danger" href="{{ url_for('accounts.owner_delete', store_id=s.id) }}">Delete</a>
                 </td>
             </tr>
             {% endfor %}
