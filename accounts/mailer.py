@@ -207,3 +207,32 @@ def send_invite(to, link, store_name, inviter, minutes):
     send(to, f'Sign in to Core Credits Checker for {store_name}', text,
          _wrap(f'{store_name} on Core Credits Checker', lines, link,
                'Sign in', foot))
+
+
+def send_signup(to, link, minutes):
+    """The link that finishes a sign-up. Nothing that the person typed
+    goes in it (no store name): the address is not confirmed yet."""
+    name = app_name()
+    lines = [f'Use this link to finish setting up your store on Core '
+             f'Credits Checker ({name}).',
+             'Your store is set up when you use it, and you are its admin. '
+             'There is no password.',
+             f'It works once and expires in {minutes // 60} hours.']
+    foot = ('If you did not ask to sign up, ignore this email. Nothing is '
+            'set up without this link.')
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, f'Finish setting up your store on {name}', text,
+         _wrap('Finish setting up your store', lines, link, 'Finish',
+               foot))
+
+
+def send_new_store(to, store, admin_email):
+    """Tell the owner that a store signed itself up."""
+    lines = [f'{admin_email} signed up {store["name"]} (dealer code '
+             f'{store["dealer_code"]}) on Core Credits Checker.',
+             'The store is on your Stores page.']
+    foot = 'You get this email because you run the service.'
+    link = f'{site_url()}/owner'
+    text = '\n\n'.join(lines + [link, foot])
+    send(to, f'New store signed up: {store["name"]}', text,
+         _wrap('A store signed up', lines, link, 'Open Stores', foot))

@@ -19,5 +19,6 @@
     </form>
     <p class="note" style="margin:16px 0 0;">There is no password. We email you a link that signs you in. It works once and expires in 20 minutes.</p>
 </div>
+{% if signups_open %}<p class="note" style="text-align:center;">New here? <a class="plain" href="{{ url_for('accounts.signup') }}">Sign up your store</a></p>{% endif %}
 <p class="note" style="text-align:center;"><a class="plain" href="/">Back</a></p>
 {% endblock %}

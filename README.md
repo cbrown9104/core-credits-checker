@@ -41,12 +41,19 @@ You get back:
 Off by default. Set `DATABASE_URL` (Postgres) and the app turns into a
 signed-in service:
 
-- **Front page** with a Sign in button. Nothing else is reachable signed out.
+- **Front page** with Sign in and Sign up your store. Nothing else is
+  reachable signed out.
   Signed in, the site's address opens Full Reconciliation (the weekly run);
   Quick Check is at `/quick`.
 - **Sign-in by emailed link.** No passwords. A link works once and expires in
-  20 minutes; the browser stays signed in for 30 days. Only invited emails get
-  a link.
+  20 minutes; the browser stays signed in for 30 days. Only a person on a
+  store gets a sign-in link.
+- **Sign-up.** A store signs itself up at `/signup` with its name, its dealer
+  code and a work email. The emailed link (72 hours) makes the store when the
+  person uses it, with that person as its admin. No store is made before that,
+  and the email carries nothing that the person typed. A dealer code that
+  already has a store is refused. The owner gets an email for each new store.
+  At most 50 sign-up emails go out in a day.
 - **The account is the store.** Everyone on a store sees the same master,
   history and results. One store can never open another store's runs, files
   or master.
@@ -81,6 +88,7 @@ signed-in service:
 | `MAIL_REPLY_TO` | Optional. Where a reply to a sign-in email goes. |
 | `SUPPORT_EMAIL` | Optional. Shown at the foot of every page as where to write for help. |
 | `APP_NAME` | Name shown on the front page and in emails. Default `Parts Manager Solutions`. |
+| `SIGNUPS` | Optional. `off` closes the sign-up page. The owner then adds each store on the Stores page. |
 
 The tables are created on first start (`accounts/schema.sql`) and brought up
 to date whenever that file changes. The key that signs the session cookie is

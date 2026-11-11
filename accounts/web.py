@@ -2,7 +2,8 @@
 
 How sign-in works: a person types their work email, gets a link that
 works once and expires in 20 minutes, and lands signed in for 30 days on
-that browser. There are no passwords. Only invited emails get a link.
+that browser. There are no passwords. Only a person on a store gets a
+sign-in link. A store can sign itself up (see signup).
 
 Everything here is inert until DATABASE_URL is set (see accounts/db.py).
 """
@@ -35,7 +36,8 @@ UPLOADS = {'api_reconcile', 'check_cores'}
 
 # Pages a signed-out visitor may open.
 PUBLIC = {'index', 'static', 'favicon', 'accounts.login',
-          'accounts.login_link', 'accounts.logout', 'accounts.healthz'}
+          'accounts.login_link', 'accounts.logout', 'accounts.healthz',
+          'accounts.signup'}
 # Pages that are about the person, not about one store. They work with no
 # store picked yet, and posts to them are not tied to a store.
 STORE_FREE = PUBLIC | {'accounts.owner', 'accounts.owner_create_store',
@@ -140,7 +142,8 @@ _FORM_PAGE = {
     'accounts.master_restore': '/history',
     'accounts.owner_create_store': '/owner', 'accounts.owner_open': '/owner',
     'accounts.switch_store': '/stores', 'accounts.logout': '/',
-    'accounts.login': '/login', 'api_reconcile': '/reconcile',
+    'accounts.login': '/login', 'accounts.signup': '/signup',
+    'api_reconcile': '/reconcile',
     'check_cores': '/quick',
 }
 
@@ -437,6 +440,7 @@ def _context():
         'is_admin': is_admin() if on else False,
         'csrf_token': csrf_token if on else (lambda: ''),
         'form_guard': form_guard if on else (lambda: ''),
+        'signups_open': on and signups_open(),
     }
 
 
@@ -628,11 +632,22 @@ def login_link(token):
             g.user['id'] != user['id'] else ''
         return render_template('account/login_confirm.html',
                                email=user['email'], token=token,
-                               signed_in_as=other)
-    user, store_id, sid = core.use_login_token(
-        token, browser=session.get('csrf') or '')
+                               signed_in_as=other,
+                               signup=user['signup_name'])
+    try:
+        user, store_id, sid, made = core.use_login_token(
+            token, browser=session.get('csrf') or '')
+    except core.AccountError:
+        return _refuse(409, 'That store is already set up',
+                       'Someone set that store up while your link was '
+                       'waiting. Ask its admin to add you on their Users '
+                       'page.', url_for('accounts.login'), 'Sign in')
     if not user:
         return _link_dead()
+    if made:
+        for to in core.owner_emails():
+            mailer.in_background(mailer.send_new_store, to, made,
+                                 user['email'])
     nxt = _safe_next(session.get('next'))
     core.end_session(session.get('sx'))
     session.clear()
@@ -657,6 +672,59 @@ def logout():
     core.end_session(session.get('sx'))
     session.clear()
     return redirect('/')
+
+
+# ── sign up ─────────────────────────────────────────────────────────────
+def signups_open():
+    """The sign-up page is there unless SIGNUPS is set to off."""
+    return os.environ.get('SIGNUPS', '').strip().lower() != 'off'
+
+
+@bp.route('/signup', methods=['GET', 'POST'])
+def signup():
+    """A store signs itself up. Nothing is made here. The emailed link
+    makes the store, with the person as its admin, when they use it (see
+    core.use_login_token). The email carries nothing the person typed: a
+    stranger must not be able to send their own words from this site."""
+    _need_accounts()
+    if not signups_open():
+        abort(404)
+    form = {k: request.form.get(k, '').strip()
+            for k in ('name', 'dealer_code', 'email')}
+    if request.method != 'POST':
+        return render_template('account/signup.html', error='', **form)
+
+    def again(error, code):
+        return render_template('account/signup.html', error=error,
+                               **form), code
+
+    email = core.norm_email(form['email'])
+    try:
+        if not mailer.configured():
+            raise mailer.MailNotConfigured()
+        base = base_url()
+    except mailer.MailError:
+        return again('Email is not set up yet, so sign-up links cannot be '
+                     'sent. Contact support.', 503)
+    if core.valid_email(email) and \
+            core.too_many_requests(email, client_ip()):
+        return again('Too many requests. Wait 15 minutes, then try again.',
+                     429)
+    try:
+        token = core.new_signup(form['name'], form['dealer_code'], email,
+                                INVITE_MINUTES)
+    except core.AccountError as e:
+        return again(str(e), 400)
+    mailer.in_background(mailer.send_signup, email,
+                         f'{base}/login/link/{token}', INVITE_MINUTES)
+    return render_template(
+        'account/message.html', title='Check your email',
+        lines=[f'A link to finish is on its way to {email}.',
+               'Open it on this computer and press Continue. Your store is '
+               'set up then, and you are its admin.',
+               f'The link works once and expires in {INVITE_MINUTES // 60} '
+               f'hours. Nothing after a few minutes? Check the junk '
+               f'folder.'])
 
 
 @bp.route('/stores')

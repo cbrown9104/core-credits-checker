@@ -66,8 +66,8 @@ class TestOpenMode(unittest.TestCase):
         self.assertIn(b'Quick Check', home.data)
         self.assertNotIn(b'Sign out', home.data)
         self.assertEqual(self.client.get('/reconcile').status_code, 200)
-        for path in ('/login', '/history', '/users', '/owner', '/stores',
-                     '/master/download'):
+        for path in ('/login', '/signup', '/history', '/users', '/owner',
+                     '/stores', '/master/download'):
             self.assertEqual(self.client.get(path).status_code, 404, path)
         # posting needs no token when accounts are off
         self.assertEqual(self.client.post('/api/reconcile',
@@ -584,6 +584,189 @@ class TestSignIn(AccountsCase):
             for k, v in saved.items():
                 if v is not None:
                     os.environ[k] = v
+
+
+class TestSignUp(AccountsCase):
+    def sign_up(self, c, name, dealer, email):
+        r = self.post(c, '/signup', {'name': name, 'dealer_code': dealer,
+                                     'email': email})
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        self.assertIn(b'Check your email', r.data)
+        return r
+
+    def stores_named(self, name):
+        from accounts import db
+        return db.one('SELECT count(*) AS n FROM stores WHERE name = %s',
+                      (name,))['n']
+
+    def test_a_store_signs_itself_up(self):
+        from accounts import db, mailer
+        c = self.client()
+        self.assertIn(b'Sign up your store', c.get('/').data)
+        self.assertIn(b'Sign up your store', c.get('/login').data)
+        page = c.get('/signup')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Dealer code', page.data)
+        self.sign_up(c, ' Self  Serve Motors ', '4-1234',
+                     'Sam@SelfServe.test')
+        # nothing is made until the person shows the email is theirs
+        self.assertEqual(self.stores_named('Self Serve Motors'), 0)
+        self.assertEqual(c.get('/reconcile').status_code, 302)
+        # the email carries nothing that was typed into the form
+        mail = [m for m in mailer.outbox if m['to'] == 'sam@selfserve.test']
+        self.assertEqual(len(mail), 1)
+        self.assertNotIn('Self Serve',
+                         mail[0]['subject'] + mail[0]['text'] +
+                         mail[0]['html'])
+        link = self.last_link('sam@selfserve.test')
+        # a mail scanner that opens the link makes nothing
+        look = self.client().get(link)
+        self.assertEqual(look.status_code, 200)
+        self.assertIn(b'Self Serve Motors', look.data)
+        self.assertEqual(self.stores_named('Self Serve Motors'), 0)
+        # and the sign-in page has nothing for them yet
+        mailer.outbox.clear()
+        self.post(self.client(), '/login', {'email': 'sam@selfserve.test'})
+        self.assertEqual(mailer.outbox, [])
+        # Continue: the store, its admin and the sign-in, in one step
+        self.use_link(c, link)
+        page = c.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Self Serve Motors', page.data)
+        store = db.one("SELECT * FROM stores WHERE name = "
+                       "'Self Serve Motors'")
+        self.assertEqual(store['dealer_code'], '41234')
+        who = db.rows('SELECT u.email, m.role FROM memberships m JOIN '
+                      'users u ON u.id = m.user_id WHERE m.store_id = %s',
+                      (store['id'],))
+        self.assertEqual([(w['email'], w['role']) for w in who],
+                         [('sam@selfserve.test', 'admin')])
+        self.assertEqual(c.get('/users').status_code, 200)
+        # the owner is told once, and the store is in the owner's list
+        told = [m for m in mailer.outbox if m['to'] == OWNER]
+        self.assertEqual(len(told), 1)
+        self.assertIn('Self Serve Motors', told[0]['subject'])
+        self.assertIn('sam@selfserve.test', told[0]['text'])
+        self.assertIn('41234', told[0]['text'])
+        owner = self.sign_in(OWNER)
+        self.assertIn(b'Self Serve Motors', owner.get('/owner').data)
+        # the link is dead now, and sign-in works the usual way
+        self.assertEqual(self.client().get(link).status_code, 410)
+        sam = self.sign_in('sam@selfserve.test')
+        self.assertIn(b'Self Serve Motors', sam.get('/reconcile').data)
+
+    def test_what_the_sign_up_page_refuses(self):
+        from accounts import mailer
+        self.make_store('Taken Motors', 'tia@taken.test', dealer='55555')
+        mailer.outbox.clear()
+        c = self.client()
+        new = {'name': 'New Motors', 'dealer_code': '11111',
+               'email': 'ann@new.test'}
+        for change, said in (
+                ({'name': ' '}, b'Enter the store name.'),
+                ({'dealer_code': 'none'}, b'Enter your dealer code'),
+                ({'email': 'not-an-email'}, b'Enter a valid work email'),
+                # a store that is already set up is not set up twice,
+                # however the second person spells its name
+                ({'dealer_code': '55555'}, b'already set up'),
+                ({'name': 'taken motors', 'dealer_code': '55555'},
+                 b'already set up')):
+            r = self.post(c, '/signup', dict(new, **change))
+            self.assertEqual(r.status_code, 400, change)
+            self.assertIn(said, r.data)
+        # what was typed is still in the form
+        self.assertIn(b'value="taken motors"', r.data)
+        self.assertIn(b'value="ann@new.test"', r.data)
+        # a post without the page token does nothing
+        self.assertEqual(c.post('/signup', data=new).status_code, 400)
+        self.assertEqual(mailer.outbox, [])
+        self.assertEqual(self.stores_named('New Motors'), 0)
+
+    def test_sign_up_emails_are_limited(self):
+        from accounts import core, db, mailer
+        c = self.client()
+        new = {'dealer_code': '22222', 'email': 'flood@signup.test'}
+        codes = [self.post(c, '/signup',
+                           dict(new, name=f'Flood {i}')).status_code
+                 for i in range(core.MAX_PER_EMAIL_AND_IP + 1)]
+        self.assertEqual(codes[:-1], [200] * core.MAX_PER_EMAIL_AND_IP)
+        self.assertEqual(codes[-1], 429)
+        # and there is a ceiling for the day, whoever asks
+        asked = db.one('SELECT count(*) AS n FROM login_tokens WHERE '
+                       'signup_name IS NOT NULL')['n']
+        saved, core.MAX_SIGNUPS_PER_DAY = core.MAX_SIGNUPS_PER_DAY, asked
+        try:
+            mailer.outbox.clear()
+            r = self.post(self.client(), '/signup', {
+                'name': 'One Too Many', 'dealer_code': '33333',
+                'email': 'late@signup.test'})
+            self.assertEqual(r.status_code, 400)
+            self.assertIn(b'paused for today', r.data)
+            self.assertEqual(mailer.outbox, [])
+        finally:
+            core.MAX_SIGNUPS_PER_DAY = saved
+
+    def test_two_links_or_two_clicks_make_one_store(self):
+        c = self.client()
+        self.sign_up(c, 'Twice Motors', '44441', 'tom@twice.test')
+        first = self.last_link('tom@twice.test')
+        self.sign_up(c, 'Twice Motors', '44441', 'tom@twice.test')
+        second = self.last_link('tom@twice.test')
+        self.assertNotEqual(first, second)
+        # both clicks of a double click leave with the same cookie
+        self.assertEqual(c.get(second).status_code, 200)
+        token, _ = self.guard(c)
+        before = c.get_cookie('pms_session').value
+        self.assertEqual(c.post(second, data={
+            'csrf_token': token}).status_code, 302)
+        c.set_cookie('pms_session', before)
+        self.assertEqual(c.post(second, data={
+            'csrf_token': token}).status_code, 302)
+        page = c.get('/reconcile')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'Twice Motors', page.data)
+        # the other link died with the one that was used
+        self.assertEqual(self.client().get(first).status_code, 410)
+        self.assertEqual(self.stores_named('Twice Motors'), 1)
+
+    def test_a_person_on_a_store_can_sign_up_another(self):
+        self.make_store('First Of Two', 'gil@group.test')
+        # signed in or not: a person with a second store need not sign out
+        c = self.sign_in('gil@group.test')
+        self.assertEqual(c.get('/signup').status_code, 200)
+        self.sign_up(c, 'Second Of Two', '44443', 'gil@group.test')
+        r = self.use_link(c, self.last_link('gil@group.test'))
+        # two stores now: the person picks for themselves
+        self.assertTrue(r.headers['Location'].endswith('/stores'))
+        page = c.get('/stores')
+        self.assertIn(b'First Of Two', page.data)
+        self.assertIn(b'Second Of Two', page.data)
+
+    def test_a_store_set_up_while_the_link_waited_is_not_made_twice(self):
+        c = self.client()
+        self.sign_up(c, 'Race Motors', '44444', 'rae@race.test')
+        link = self.last_link('rae@race.test')
+        self.make_store('Race Motors Inc', 'other@race.test', dealer='44444')
+        self.assertEqual(c.get(link).status_code, 200)
+        r = self.post(c, link)
+        self.assertEqual(r.status_code, 409)
+        self.assertIn(b'already set up', r.data)
+        self.assertEqual(self.stores_named('Race Motors'), 0)
+        self.assertEqual(c.get('/reconcile').status_code, 302)
+
+    def test_the_sign_up_page_can_be_closed(self):
+        os.environ['SIGNUPS'] = 'off'
+        try:
+            c = self.client()
+            self.assertEqual(c.get('/signup').status_code, 404)
+            r = self.post(c, '/signup', {
+                'name': 'Closed Motors', 'dealer_code': '44445',
+                'email': 'cy@closed.test'})
+            self.assertEqual(r.status_code, 404)
+            self.assertNotIn(b'Sign up', c.get('/').data)
+            self.assertNotIn(b'Sign up', c.get('/login').data)
+        finally:
+            os.environ.pop('SIGNUPS', None)
 
 
 class TestStores(AccountsCase):
