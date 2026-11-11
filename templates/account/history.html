@@ -7,6 +7,10 @@
     td.why { white-space: normal; line-height: 1.5; min-width: 260px; }
     td.act { white-space: normal; }
     td.act .pill { white-space: nowrap; margin-top: 4px; }
+    .replace-master { margin-top: 22px; padding-top: 18px; border-top: 1px solid #2f2f4a; }
+    .replace-master h3 { font-size: 0.95rem; margin: 0 0 6px; }
+    .replace-master form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .replace-master input[type=file] { color: inherit; max-width: 100%; }
 </style>
 {% endblock %}
 {% block content %}
@@ -20,8 +24,30 @@
     </div>
     <p class="note">Last saved {{ master.created_at|central }}{% if master.created_email %} by {{ master.created_email }}{% endif %}. The next run starts from this master and saves the updated one back here.</p>
     <a class="btn-primary" href="{{ url_for('accounts.master_download') }}">Download {{ master.filename }}</a>
+    {% if is_admin %}
+    <div class="replace-master">
+        <h3>Replace the saved master</h3>
+        <p class="note">Use this after you correct the master by hand. The workbook you pick becomes the saved master as it is, with no reconciliation run. It needs a "Core Returns" sheet. The one it replaces stays under Master versions, so it can be put back.</p>
+        <form method="post" action="{{ url_for('accounts.master_replace') }}" enctype="multipart/form-data" data-confirm="Click again to replace the saved master">
+            {{ form_guard() }}
+            <input type="file" name="master" accept=".xlsx,.xlsm" required>
+            <button class="btn-small" type="submit">Replace saved master</button>
+        </form>
+    </div>
+    {% endif %}
     {% else %}
     <p class="note" style="margin-bottom:0;">No master is saved yet. On <a class="plain" href="/reconcile">Full Reconciliation</a>, drop in your Core_Returns_RECONCILED.xlsx (or leave it empty to start a new one) and run. The result is saved here.</p>
+    {% if is_admin %}
+    <div class="replace-master">
+        <h3>Save a master without a run</h3>
+        <p class="note">Pick your Core_Returns_RECONCILED.xlsx to save it here as it is. It needs a "Core Returns" sheet.</p>
+        <form method="post" action="{{ url_for('accounts.master_replace') }}" enctype="multipart/form-data">
+            {{ form_guard() }}
+            <input type="file" name="master" accept=".xlsx,.xlsm" required>
+            <button class="btn-small" type="submit">Save as the master</button>
+        </form>
+    </div>
+    {% endif %}
     {% endif %}
 </div>
 

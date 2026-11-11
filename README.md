@@ -26,7 +26,7 @@ You get back:
 | `Credit_Request.pdf` | The signed shipper page for each requested ticket, with **UnPaid** marked in red in the Part Checkoff column. |
 | `Shippers_To_Rescan.xlsx/.pdf` | Requested tickets whose signed page wasn't in the uploaded scans. |
 | `Unpaid_Comparison_<date>.xlsx` | Master vs. DealerCONNECT: MOPAR HAS NO RECORD · ADD TO MASTER · FIX DATA · PAID PER MOPAR · AGREE. |
-| `Core_Recon_Report_<date>.xlsx` | Summary, Matched, Partial Credits, Uncredited, Unmatched Credits, Credit Request, New Shipments, Scan Review, Data Changes. |
+| `Core_Recon_Report_<date>.xlsx` | Summary, Matched, Partial Credits, Uncredited, Unmatched Credits, Credit Request, New Shipments, Page Totals, Scan Review, Data Changes. |
 
 ### Rules
 - Shippers and credits are matched on the **control ticket** (unique), never the part number.
@@ -34,6 +34,12 @@ You get back:
 - Credit memo lines are added up and checked against the memo's NET CREDIT AMOUNT every run.
 - DealerCONNECT is authoritative for part #, amount and warranty claim; the master is authoritative for shipment date.
 - Shipper scans are OCR'd (tesseract, 200 DPI) with word positions. Each page's `GCRS SHP#` becomes the Shipment ID. OCR misreads of the leading C (0, 6, ©, €), glued qty/amount and stray check marks are handled. A scanned ticket that's already on the master keeps the master's data. A part number on a new ticket that's one letter off a part you've returned before gets snapped to it and flagged.
+- **Every shipper page is checked against its printed `TOTAL <count> <amount>`.** A page that adds tickets, or that does not add up on the first read, is read twice more (enlarged and smoothed two ways) and the reads are compared row by row: a part this store has returned before wins, otherwise what most reads agree on; an amount is taken from the reads so the page adds up to its TOTAL; a row the first read missed is added when two reads have it, when the ticket is on the master / DealerCONNECT / this run's memos, or when the page only adds up with it. Everything changed is flagged on the row (New Shipments › Check). Each page ends up *Matches*, *Does not match* or *TOTAL not read* (the count is usually circled by hand, which can hide the number) on the **Page Totals** sheet and on the results page; pages that added tickets and do not match are also listed under "Check these". A crossed-out line shows up as a page that is short of its TOTAL.
+- Only the table is read: rows start under the column headings and stop at the TOTAL line, the PICKUP VERIFICATION block or a gap of several lines, so a driver's scan receipt or hand-written ticket numbers elsewhere on the page are not taken for shipper lines.
+- A credit for a ticket that is not on the master is added with no Shipment ID. When an uploaded page is short of its TOTAL and holds tickets in the same number range, the run says so, and fills the Shipment ID when the page is short by exactly that one line and amount.
+- The dealer code printed on the documents (`DEALER: 45558000`) wins over the one entered for the run; a difference is reported.
+- The master is written with its cell formatting: Arial 10, thin gray grid, rows with no credit memo yellow, credited rows banded white / gray, A–B left, C–E centered, F right as dollars, G–H centered. *Unpaid Cores* is plain (grid only).
+- "Write today's date in Credit Requested" is off unless checked: the date belongs on the master once the request email has gone to Mopar.
 - With accounts off nothing is stored. Uploads are deleted when the run ends; result files are deleted after 2 hours.
 
 ## Store accounts (sign-in, saved master, history)
@@ -76,6 +82,9 @@ signed-in service:
   saves the updated one back. Every version is kept; an admin can put an
   earlier one back from History. Only an admin can swap the saved master for
   another workbook, and it has to be a real master (a "Core Returns" tab).
+  An admin can also replace the saved master without a run, from History
+  ("Replace the saved master"): the workbook is saved as it is, as a new
+  version, and the next run starts from it.
 - **A master is held, not made current,** when it comes out with under half
   the saved master's rows, or when the saved master changed while the run was
   working. The run is still saved; an admin makes the held version current

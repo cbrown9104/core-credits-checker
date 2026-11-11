@@ -11,6 +11,7 @@ import datetime
 import io
 import os
 import secrets
+import tempfile
 import threading
 import traceback
 from urllib.parse import urlsplit
@@ -22,6 +23,7 @@ from flask.sessions import SecureCookieSessionInterface
 from markupsafe import Markup
 
 from recon import jobs as recon_jobs
+from recon.master import MasterError
 
 from . import core, db, mailer, storage
 
@@ -32,7 +34,9 @@ INVITE_MINUTES = 72 * 60
 # calls may send more (up to the app's own limit); everything else is cut
 # off here, whether or not it says how big it is.
 SMALL_BODY = 64 * 1024
-UPLOADS = {'api_reconcile', 'check_cores'}
+UPLOADS = {'api_reconcile', 'check_cores', 'accounts.master_replace'}
+# A master workbook is a few hundred KB; this is the most one may be.
+MASTER_UPLOAD_MAX = 25 * 1024 * 1024
 
 # Pages a signed-out visitor may open.
 PUBLIC = {'index', 'static', 'favicon', 'accounts.login',
@@ -141,6 +145,7 @@ _FORM_PAGE = {
     'accounts.users_add': '/users', 'accounts.users_invite': '/users',
     'accounts.users_remove': '/users', 'accounts.store_settings': '/users',
     'accounts.master_restore': '/history',
+    'accounts.master_replace': '/history',
     'accounts.owner_create_store': '/owner', 'accounts.owner_open': '/owner',
     'accounts.owner_approve': '/owner', 'accounts.owner_delete': '/owner',
     'accounts.switch_store': '/stores', 'accounts.logout': '/',
@@ -843,6 +848,57 @@ def master_restore(master_id):
     flash('That version is the current master now. The one it replaced is '
           'still in the list below.')
     return redirect(url_for('accounts.history'))
+
+
+@bp.route('/master/replace', methods=['POST'])
+def master_replace():
+    """Swap the store's saved master for an uploaded workbook, without a
+    run (a corrected master, say). Admins only. The workbook is saved as
+    a new version exactly as uploaded; the one it replaces stays in the
+    list and can be put back."""
+    _need_accounts()
+    _need_admin()
+    back = redirect(url_for('accounts.history'))
+    f = request.files.get('master')
+    if not f or not f.filename:
+        flash('Choose the master workbook first.', 'error')
+        return back
+    if os.path.splitext(f.filename)[1].lower() not in ('.xlsx', '.xlsm'):
+        flash('The master has to be an Excel workbook (.xlsx).', 'error')
+        return back
+    if recon_jobs.store_busy(g.store['id']):
+        flash('A run is working for this store right now. Its master '
+              'would be held back if the saved one changed under it. '
+              'Wait for it to finish, then replace the master.', 'error')
+        return back
+    content = f.read(MASTER_UPLOAD_MAX + 1)
+    if len(content) > MASTER_UPLOAD_MAX:
+        flash('That file is too large to be a master workbook.', 'error')
+        return back
+    fd, path = tempfile.mkstemp(suffix='.xlsx')
+    try:
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(content)
+        try:
+            storage.check_master_upload(path)
+            new_id = storage.replace_master(
+                g.store['id'], os.path.basename(f.filename), content,
+                actor())
+        except (storage.NotAMaster, MasterError) as e:
+            flash(str(e), 'error')
+            return back
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    now = storage.current_master(g.store['id'])
+    flash(f'The saved master was replaced: {now["row_count"]:,} rows, '
+          f'{now["unpaid_count"]} unpaid. The next run starts from it. The '
+          f'one it replaced is still under Master versions.'
+          if now and now['id'] == new_id else 'The saved master was '
+          'replaced.')
+    return back
 
 
 # ── users (store admin) ─────────────────────────────────────────────────

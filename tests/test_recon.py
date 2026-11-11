@@ -677,3 +677,510 @@ class TestWebApp(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ── page TOTAL check, re-reads, and the master's look ───────────────────
+def ocr_line(text, top, left=300):
+    """One OCR line, words 100 px apart, the way recon.ocr returns it."""
+    words = [{'text': t, 'left': left + 100 * i, 'top': top, 'width': 90,
+              'height': 20, 'conf': 90.0} for i, t in enumerate(text.split())]
+    return {'text': text, 'words': words, 'left': left, 'top': top,
+            'right': left + 100 * len(words), 'bottom': top + 20}
+
+
+def page_line(ticket, part='11111111AA', amount=50.0, y=0):
+    ln = scan_line(ticket, part, amount)
+    ln['box'] = (300, y, 400, y + 20)
+    ln['line_box'] = (200, y, 1500, y + 20)
+    return ln
+
+
+def total_page(lines, total_texts=(), shipment='2026-09-01 17:00.01',
+               name='w.pdf', number=1):
+    for i, ln in enumerate(lines):
+        ln['box'] = (300, 500 + 30 * i, 400, 520 + 30 * i)
+        ln['line_box'] = (200, 500 + 30 * i, 1500, 520 + 30 * i)
+    p = scan_page(name, number, shipment, lines)
+    for i, ln in enumerate(lines):          # scan_page moves the boxes
+        ln['box'] = (300, 500 + 30 * i, 400, 520 + 30 * i)
+    p['total_texts'] = list(total_texts)
+    return p
+
+
+class TestPageTotals(unittest.TestCase):
+    """Every shipper page prints "TOTAL <count> <amount>". The rows read
+    from a page are checked against it, pages that add tickets are read
+    again, and the reads are compared."""
+
+    def rec(self, master_rows=()):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rec = engine.Reconciler({'asof': datetime.date(2026, 10, 5),
+                                 'threshold': 60})
+        if master_rows:
+            path = os.path.join(tmp, 'm.xlsx')
+            make_master(path, [dict(r) for r in master_rows])
+            rec.load_master(path, 'm.xlsx')
+        else:
+            rec.load_master(None, None)
+        rec.load_dc([], '')
+        rec.parts = engine.PartCorrector(
+            [r.get('part') for r in rec.ledger.rows])
+        return rec
+
+    def test_total_readings(self):
+        from recon.shipper import total_amounts, total_counts
+        self.assertEqual(total_amounts('TOTAL 3 3,575.00')[0], [3575.0])
+        self.assertEqual(total_counts('TOTAL 3 3,575.00'), [3])
+        self.assertEqual(total_counts('TOTAL 14 1,400.00'), [14])
+        # the count circled by hand: pen marks are not a count
+        self.assertEqual(total_counts('TOTAL C2) 3,035.00'), [])
+        self.assertEqual(total_counts('TOTAL (@) 1,815.00'), [])
+        # the circled count glued onto the amount: both readings offered
+        direct, loose = total_amounts('7965.00')
+        self.assertEqual(direct, [7965.0])
+        self.assertIn(965.0, loose)
+        direct, loose = total_amounts('51, 615.00')
+        self.assertEqual(direct, [51615.0])
+        self.assertIn(1615.0, loose)
+        self.assertEqual(total_amounts('TOTAL 2 650-00')[0], [650.0])
+        self.assertEqual(total_amounts('TOTAL Cp sec'), ([], []))
+
+    def test_only_the_table_is_read(self):
+        from recon.shipper import parse_page
+        lines = [
+            ocr_line('DEALER: 455580000 SHIP TO:', 160),   # looks like one
+            ocr_line('PART CONTROL CLAIM PART PART CORE AMOUNT', 480),
+            ocr_line('CHECKOFF TICKET NUMBER NUMBER DESCRIPTION QUANTITY '
+                     'USD', 505),
+            ocr_line('C400000001 11111111AA CORE 1 75.00', 535),
+            ocr_line('C400000002 22222222AB CORE 1 1,000.00', 565),
+            ocr_line('TOTAL 2 1,075.00', 625),
+            # a driver's scan receipt stapled under the table
+            ocr_line('C400000003', 860), ocr_line('C400000004', 890),
+            ocr_line('PICKUP VERIFICATION:-', 1500),
+        ]
+        page = parse_page({'page': 1, 'width': 1700, 'height': 2200,
+                           'dpi': 200, 'lines': lines})
+        self.assertEqual([ln['ticket'] for ln in page['lines']],
+                         ['C400000001', 'C400000002'])
+        self.assertEqual(page['total_texts'], ['TOTAL 2 1,075.00'])
+        self.assertEqual(page['printed_total'], 1075.0)
+        # no TOTAL read at all: a big gap still ends the table
+        page = parse_page({'page': 1, 'width': 1700, 'height': 2200,
+                           'dpi': 200,
+                           'lines': lines[:5] + lines[6:]})
+        self.assertEqual([ln['ticket'] for ln in page['lines']],
+                         ['C400000001', 'C400000002'])
+        # headings unreadable: the page is taken whole, as before
+        page = parse_page({'page': 1, 'width': 1700, 'height': 2200,
+                           'dpi': 200, 'lines': lines[3:5]})
+        self.assertEqual(len(page['lines']), 2)
+
+    def check(self, rec, page, reads=(), crops=((), ())):
+        cand = rec._candidates(page, reads, crops)
+        if reads:
+            rec._merge_reads(page, list(reads), cand)
+        new = any(not rec.ledger.find(ln['ticket']) for ln in page['lines'])
+        return rec._page_check(page, cand, new)
+
+    def test_a_page_that_adds_up_matches(self):
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=75.0),
+                           page_line('C400000002', amount=1000.0)],
+                          ['TOTAL 2 1,075.00'])
+        c = self.check(rec, page)
+        self.assertEqual((c['status'], c['lines'], c['amount'],
+                          c['printed_count'], c['printed_amount']),
+                         ('ok', 2, 1075.0, 2, 1075.0))
+        # count circled (unreadable) but the amount ties: still a match
+        page['total_texts'] = ['TOTAL (@) 1,075.00']
+        self.assertEqual(self.check(rec, page)['status'], 'ok')
+        # a close-up that glued the count onto the amount, count confirmed
+        page['total_texts'] = []
+        self.assertEqual(self.check(rec, page, (), (['21,075.00'], ['2']))
+                         ['status'], 'ok')
+        # the same glued reading with no count to confirm it is not enough
+        self.assertEqual(self.check(rec, page, (), (['21,075.00'], []))
+                         ['status'], 'unread')
+
+    def test_a_misread_amount_is_put_right_from_the_total(self):
+        # first read 4,000.00 where the page says 1,000.00 (page total
+        # 3,575.00); a re-read has it right
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=75.0),
+                           page_line('C400000002', amount=4000.0),
+                           page_line('C400000003', amount=2500.0)],
+                          ['TOTAL 3 3,575.00'])
+        again = [page_line('C400000001', amount=75.0, y=500),
+                 page_line('C400000002', amount=1000.0, y=530),
+                 page_line('C400000003', amount=2500.0, y=560)]
+        c = self.check(rec, page, [{'rows': again,
+                                    'total_texts': ['TOTAL 3 3,575.00']}])
+        self.assertEqual(c['status'], 'ok')
+        self.assertEqual([ln['amount'] for ln in page['lines']],
+                         [75.0, 1000.0, 2500.0])
+        self.assertIn('first read as $4,000.00',
+                      page['lines'][1]['flags'][0])
+        self.assertEqual(c['changes'],
+                         ['C400000002: amount $4,000.00 → $1,000.00'])
+        # no re-read has the right amount: nothing is forced, page flagged
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=75.0),
+                           page_line('C400000002', amount=4000.0)],
+                          ['TOTAL 2 1,075.00'])
+        again = [page_line('C400000001', amount=75.0, y=500),
+                 page_line('C400000002', amount=4000.0, y=530)]
+        c = self.check(rec, page, [{'rows': again,
+                                    'total_texts': ['TOTAL 2 1,075.00']}])
+        self.assertEqual(c['status'], 'mismatch')
+        self.assertEqual(page['lines'][1]['amount'], 4000.0)
+        self.assertIn('$1,075.00', c['note'])
+        self.assertIn('$4,075.00', c['note'])
+
+    def test_an_unreadable_amount_is_what_the_total_leaves(self):
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=500.0),
+                           page_line('C400000002', amount=None),
+                           page_line('C400000003', amount=120.0)],
+                          ['TOTAL 3 745.00'])
+        again = [page_line('C400000001', amount=500.0, y=500),
+                 page_line('C400000002', amount=None, y=530),
+                 page_line('C400000003', amount=120.0, y=560)]
+        c = self.check(rec, page, [{'rows': again,
+                                    'total_texts': ['TOTAL 3 745.00']}])
+        self.assertEqual(page['lines'][1]['amount'], 125.0)
+        self.assertIn('TOTAL leaves', page['lines'][1]['flags'][0])
+        self.assertEqual(c['status'], 'ok')
+        # one read of the TOTAL is not enough to fill an amount from it
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=500.0),
+                           page_line('C400000002', amount=None)],
+                          ['TOTAL 2 625.00'])
+        again = [page_line('C400000001', amount=500.0, y=500),
+                 page_line('C400000002', amount=None, y=530)]
+        c = self.check(rec, page, [{'rows': again, 'total_texts': []}])
+        self.assertIsNone(page['lines'][1]['amount'])
+        self.assertNotEqual(c['status'], 'ok')
+
+    def test_a_line_the_first_read_missed(self):
+        def reread(extra, amount=50.0):
+            return {'rows': [page_line('CB00800001', amount=100.0, y=500),
+                             page_line('CW00100530', amount=50.0, y=530),
+                             page_line(extra, '33333333AC', amount, y=560)],
+                    'total_texts': []}
+
+        def page():
+            return total_page([page_line('CB00800001', amount=100.0),
+                               page_line('CW00100530', amount=50.0)])
+        # only one re-read has it and nothing else knows the ticket: not
+        # added, but said
+        rec = self.rec()
+        p = page()
+        self.check(rec, p, [reread('CW00100951'),
+                            {'rows': [], 'total_texts': []}])
+        self.assertEqual(len(p['lines']), 2)
+        self.assertIn('CW00100951', rec.r['ocr_review'][0]['issue'])
+        # this run's credit memo pays that ticket: it is a real line
+        rec = self.rec()
+        rec.credit_tickets = {'CW00100951'}
+        p = page()
+        self.check(rec, p, [reread('CW00100951'),
+                            {'rows': [], 'total_texts': []}])
+        self.assertEqual([ln['ticket'] for ln in p['lines']],
+                         ['CB00800001', 'CW00100530', 'CW00100951'])
+        self.assertIn('missed on the first read', p['lines'][2]['flags'][0])
+        # two re-reads have it
+        rec = self.rec()
+        p = page()
+        self.check(rec, p, [reread('CW00100951'), reread('CW00100951')])
+        self.assertEqual(len(p['lines']), 3)
+        # one re-read has it and the page only adds up with it
+        rec = self.rec()
+        p = page()
+        p['total_texts'] = ['TOTAL 3 200.00']
+        c = self.check(rec, p, [reread('CW00100951'),
+                                {'rows': [], 'total_texts': []}])
+        self.assertEqual(len(p['lines']), 3)
+        self.assertEqual(c['status'], 'ok')
+        # the added line goes on the master with the page's shipment
+        rec.pages = [p]
+        rec._resolve_lines()
+        rec._apply_scans()
+        added = {x['ticket']: x for x in rec.r['new_shipments']}
+        self.assertEqual(added['CW00100951']['shipment'],
+                         '2026-09-01 17:00.01')
+        self.assertIn('missed on the first read',
+                      added['CW00100951']['flags'])
+        # something with no part and no amount is not a line
+        rec = self.rec()
+        p = page()
+        junk = reread('C400000218', None)
+        junk['rows'][2]['part'] = ''
+        self.check(rec, p, [junk, dict(junk)])
+        self.assertEqual(len(p['lines']), 2)
+
+    def test_a_short_page_is_called_out(self):
+        # printed TOTAL 2 / $125.00, one line read (the other is crossed
+        # out by hand, or the scan dropped it)
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=50.0)],
+                          ['TOTAL 2 125.00'])
+        again = {'rows': [page_line('C400000001', amount=50.0, y=500)],
+                 'total_texts': ['TOTAL 2 125.00']}
+        rec.pages = [page]
+        page['check'] = self.check(rec, page, [again, dict(again)])
+        self.assertEqual(page['check']['status'], 'mismatch')
+        self.assertIn('shows 2 lines, 1 were read', page['check']['note'])
+        self.assertIn('crossed out', page['check']['note'])
+        rec._report_page_checks()
+        self.assertIn('do not match their printed TOTAL',
+                      rec.r['warnings'][0])
+        self.assertIn('Page does not match', rec.r['ocr_review'][0]['issue'])
+        # the same page with its ticket already on the master: listed for
+        # review, no warning up top
+        rec = self.rec([row(None, '2026-09-01 17:00.01', 'C400000001',
+                            '11111111AA', 50)])
+        page = total_page([page_line('C400000001', amount=50.0)],
+                          ['TOTAL 2 125.00'])
+        rec.pages = [page]
+        page['check'] = self.check(rec, page, [again, dict(again)])
+        rec._report_page_checks()
+        self.assertEqual(rec.r['page_checks'][0]['status'], 'mismatch')
+        self.assertEqual(len(rec.r['ocr_review']), 1)
+        self.assertEqual(rec.r['warnings'], [])
+
+    def test_a_total_hidden_by_the_pen_is_unread_not_wrong(self):
+        # two reads agree on 995.00, the rows add to 1,995.00: the circle
+        # around the count covers the "1,"
+        rec = self.rec()
+        page = total_page([page_line('C400000001', amount=1000.0),
+                           page_line('C400000002', amount=995.0)],
+                          ['TOTAL © 995.00'])
+        again = {'rows': [page_line('C400000001', amount=1000.0, y=500),
+                          page_line('C400000002', amount=995.0, y=530)],
+                 'total_texts': ['TOTAL © 995.00']}
+        c = self.check(rec, page, [again])
+        self.assertEqual(c['status'], 'unread')
+        # rows on the master that add up by the master's amounts match
+        rec = self.rec([row(None, '2026-09-01 17:00.01', 'C400000001',
+                            '11111111AA', 1000)])
+        page = total_page([page_line('C400000001', amount=4000.0)],
+                          ['TOTAL 1 1,000.00'])
+        self.assertEqual(self.check(rec, page)['status'], 'ok')
+
+    def test_part_numbers_are_settled_over_the_reads(self):
+        rec = self.rec([row('CC00800001', '2026-06-01 17:00.01',
+                            'C300000001', '5YH25LXHAA', 100),
+                        row('CC00800001', '2026-06-01 17:00.01',
+                            'C300000002', '53010748AA', 100)])
+
+        def settle(*parts):
+            reads = [page_line('C400000001', p) for p in parts]
+            rec._vote_part(reads[0], reads)
+            return reads[0]['part'], ' '.join(reads[0].get('flags', []))
+        # a look-alike of a part on record (S for 5), on every read
+        part, flag = settle('SYH25LXHAA', 'SYH25LXHAA', 'SYH25LXHAA')
+        self.assertEqual(part, '5YH25LXHAA')
+        self.assertIn('matched to 5YH25LXHAA', flag)
+        # every read shows 53010749AA; ...48AA is on record. 9 and 8 are
+        # not look-alikes, so it is a different part: kept, and said
+        part, flag = settle('53010749AA', '53010749AA', '53010749AA')
+        self.assertEqual(part, '53010749AA')
+        self.assertIn('kept as read', flag)
+        # not on record and the reads disagree: most reads, flagged
+        part, flag = settle('68261528AR', '68261528AE', '68261528AE')
+        self.assertEqual(part, '68261528AE')
+        self.assertIn('read differently', flag)
+        part, flag = settle('68261528AR', '68261528AE', '68261528AK')
+        self.assertEqual(part, '68261528AR')
+        self.assertIn('68261528AR / 68261528AE / 68261528AK', flag)
+        # not on record, every read the same: nothing to flag
+        part, flag = settle('68261528AE', '68261528AE', '68261528AE')
+        self.assertEqual((part, flag), ('68261528AE', ''))
+        # the flag reaches the New Shipments list
+        rec2 = self.rec()
+        ln = page_line('C400000009', '68261528AR')
+        rec2._vote_part(ln, [ln, page_line('C400000009', '68261528AE'),
+                             page_line('C400000009', '68261528AK')])
+        rec2.pages = [total_page([ln])]
+        rec2._resolve_lines()
+        rec2._apply_scans()
+        self.assertIn('read differently', rec2.r['new_shipments'][0]['flags'])
+
+    def credit(self, ticket, amount, part='33333333AC'):
+        return {'ticket': ticket, 'memo': 'CC00900009',
+                'memo_date': datetime.date(2026, 10, 3), 'part': part,
+                'claim': None, 'amount': amount, 'description': 'WHEEL'}
+
+    def short_page(self, rec, total_texts):
+        page = total_page([page_line('CB00800001', amount=100.0),
+                           page_line('CW00100530', amount=50.0)],
+                          total_texts)
+        rec.pages = [page]
+        page['check'] = self.check(rec, page)
+        rec._resolve_lines()
+        rec._apply_scans()
+        return page
+
+    def test_a_credited_ticket_dropped_from_a_scan(self):
+        """A credit for a ticket that is not on the master used to be
+        added with no Shipment ID and nothing said."""
+        # the page is short by exactly one line and this amount
+        rec = self.rec()
+        self.short_page(rec, ['TOTAL 3 200.00', 'TOTAL 3 200.00'])
+        rec._memos = (['m.pdf'], [('m.pdf', {
+            'credits': [self.credit('CW00100951', 50.0)], 'memos': {},
+            'warnings': [], 'dealer': None})])
+        rec.apply_memos()
+        got = rec.ledger.find('CW00100951')[0]
+        self.assertEqual(got['shipment'], '2026-09-01 17:00.01')
+        self.assertEqual(got['memo'], 'CC00900009')
+        self.assertIn('given this page', rec.r['ocr_review'][-1]['issue'])
+        self.assertEqual(rec.r['data_fixes'][-1]['field'], 'Shipment ID')
+        # short, but not by this amount: flagged, Shipment ID left blank
+        rec = self.rec()
+        self.short_page(rec, ['TOTAL 3 400.00', 'TOTAL 3 400.00'])
+        rec._memos = (['m.pdf'], [('m.pdf', {
+            'credits': [self.credit('CW00100951', 50.0)], 'memos': {},
+            'warnings': [], 'dealer': None})])
+        rec.apply_memos()
+        self.assertIsNone(rec.ledger.find('CW00100951')[0]['shipment'])
+        self.assertIn('may have been dropped from a scan',
+                      rec.r['warnings'][-1])
+        self.assertIn('CW00100951 (w.pdf p.1)', rec.r['warnings'][-1])
+        self.assertIn('put its Shipment ID on the master',
+                      rec.r['ocr_review'][-1]['issue'])
+        # a page that checks out, or a ticket from another number range,
+        # says nothing
+        for texts, ticket in ((['TOTAL 2 150.00'], 'CW00100951'),
+                              (['TOTAL 3 200.00', 'TOTAL 3 200.00'],
+                               'CW00190951'),
+                              (['TOTAL 3 200.00', 'TOTAL 3 200.00'],
+                               'C456000001')):
+            rec = self.rec()
+            self.short_page(rec, texts)
+            rec._memos = (['m.pdf'], [('m.pdf', {
+                'credits': [self.credit(ticket, 50.0)], 'memos': {},
+                'warnings': [], 'dealer': None})])
+            rec.apply_memos()
+            self.assertIsNone(rec.ledger.find(ticket)[0]['shipment'])
+            self.assertEqual(rec.r['warnings'], [], (texts, ticket))
+
+    def test_the_dealer_code_printed_on_the_documents_wins(self):
+        def run(entered, printed):
+            rec = engine.Reconciler({'asof': datetime.date(2026, 10, 5),
+                                     'threshold': 60, 'dealer': entered})
+            rec.load_master(None, None)
+            rec.pages = []
+            for i, code in enumerate(printed):
+                p = total_page([page_line(f'C40000000{i}')], number=i + 1)
+                p['dealer'] = code
+                rec.pages.append(p)
+            rec.check_dealer()
+            return rec
+        rec = run('44558', ['45558'] * 5)
+        self.assertEqual(rec.dealer, '45558')
+        self.assertIn('set up as 44558', rec.r['warnings'][0])
+        self.assertIn('print 45558', rec.r['warnings'][0])
+        # agrees, or one stray misread among many: nothing said
+        for printed in (['45558'] * 5, ['45558'] * 6 + ['45658']):
+            rec = run('45558', printed)
+            self.assertEqual((rec.dealer, rec.r['warnings']), ('45558', []))
+        # one page is not enough to overrule what was entered
+        rec = run('44558', ['45558'])
+        self.assertEqual((rec.dealer, rec.r['warnings']), ('44558', []))
+        # nothing entered: read from the documents, as before
+        self.assertEqual(run('', ['45558'] * 3).dealer, '45558')
+
+    def test_credit_requested_is_not_stamped_unless_asked(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, 'm.xlsx')
+        make_master(path, [row(None, '2026-07-01 17:00.01', 'C400000001',
+                               '11111111AA', 50)])
+        for asked, want in ((False, None), (True, '2026-10-05')):
+            out = os.path.join(tmp, f'out{asked}')
+            os.makedirs(out)
+            res = engine.run(
+                {'master': (path, 'm.xlsx'), 'memos': [], 'shippers': [],
+                 'dc': [], 'dc_text': ''},
+                {'asof': datetime.date(2026, 10, 5), 'threshold': 60,
+                 'mark_requested': asked}, out)
+            self.assertEqual(len(res['credit_request']), 1)
+            rows, _ = M.read_master(os.path.join(out, 'm.xlsx'))
+            self.assertEqual(rows[0]['requested'], want)
+
+
+class TestMasterLook(unittest.TestCase):
+    """The master comes back looking like the workbook that went in:
+    grid, fills and alignment (it used to come back bare)."""
+
+    def test_cells_are_formatted(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, 'm.xlsx')
+        M.write_master([
+            row('CC00800001', None, 'C300000001', '11111111AA', 75, 254636),
+            row('CC00800001', '2026-06-01 17:00.01', 'C300000002',
+                '22222222AB', 120),
+            row('CC00800002', '2026-06-02 17:00.01', 'C300000003',
+                '33333333AC', 500),
+            row(None, '2026-08-03 17:00.01', 'C400000001', 'U1111111AB',
+                2500, req='2026-10-05'),
+            row(None, '2026-08-04 17:00.01', 'C400000002', '44444444AD',
+                50)], path)
+        wb = load_workbook(path)
+        ws = wb['Core Returns']
+
+        def look(c):
+            b = c.border
+            return (c.font.name, c.font.sz, c.fill.fill_type,
+                    c.fill.fgColor.rgb, c.alignment.horizontal,
+                    c.alignment.vertical,
+                    tuple((s.style, s.color.rgb if s.color else None)
+                          for s in (b.left, b.right, b.top, b.bottom)))
+        grid = (('thin', 'FFB7B7B7'),) * 4
+        align = ['left', 'left', 'center', 'center', 'center', 'right',
+                 'center', 'center']
+        # credited rows banded white / gray (odd rows gray), unpaid yellow
+        fills = {2: 'FFFFFFFF', 3: 'FFF2F2F2', 4: 'FFFFFFFF',
+                 5: 'FFFFE699', 6: 'FFFFE699'}
+        for r, color in fills.items():
+            for col in range(1, 9):
+                self.assertEqual(
+                    look(ws.cell(r, col)),
+                    ('Arial', 10, 'solid', color, align[col - 1], 'center',
+                     grid), (r, col))
+            self.assertEqual(ws.cell(r, 6).number_format, '"$"#,##0.00')
+        for col in range(1, 9):
+            h = ws.cell(1, col)
+            self.assertTrue(h.font.b)
+            self.assertEqual((h.font.color.rgb, h.fill.fgColor.rgb,
+                              h.alignment.horizontal),
+                             ('FFFFFFFF', 'FF1F4E78', 'center'))
+            self.assertEqual(h.border.left.style, 'thin')
+        self.assertEqual(ws.column_dimensions['D'].width, 13)
+        # what the app already kept is still there
+        self.assertEqual(ws.freeze_panes, 'A2')
+        self.assertEqual(ws.auto_filter.ref, 'A1:H6')
+        self.assertEqual(len(ws.conditional_formatting), 1)
+        self.assertTrue(str(ws['G5'].value).startswith('=IF(B5=""'))
+        self.assertEqual(ws['H5'].value, '2026-10-05')
+        # Unpaid Cores: plain. Header, grid, Arial 10, no fills
+        up = wb['Unpaid Cores']
+        self.assertEqual([up.cell(r, 3).value for r in (2, 3)],
+                         ['C400000001', 'C400000002'])
+        for r in (2, 3):
+            for col in range(1, 9):
+                font, size, fill, _, horiz, vert, border = look(
+                    up.cell(r, col))
+                self.assertEqual((font, size, fill, horiz, vert, border),
+                                 ('Arial', 10, None, align[col - 1],
+                                  'center', grid), (r, col))
+        self.assertEqual(up['A1'].fill.fgColor.rgb, 'FF1F4E78')
+        # and it reads back the same
+        rows, _ = M.read_master(path)
+        self.assertEqual([r['ticket'] for r in rows],
+                         ['C300000001', 'C300000002', 'C300000003',
+                          'C400000001', 'C400000002'])

@@ -736,7 +736,7 @@ def _submit_run(job_id, d, store_id, actor, saved_now, admin, started):
         dealer = g.store.get('dealer_code') or ''
     opts = {
         'asof': asof, 'threshold': threshold, 'dealer': dealer,
-        'mark_requested': _flag('mark_requested', True),
+        'mark_requested': _flag('mark_requested', False),
         'apply_dc': _flag('apply_dc', True),
         'include_prev': _flag('include_prev', False),
     }

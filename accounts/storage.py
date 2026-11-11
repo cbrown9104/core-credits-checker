@@ -161,6 +161,23 @@ def save_master(store_id, filename, content, source, actor, run_id=None):
                               source, actor, run_id, True)
 
 
+def replace_master(store_id, filename, content, actor):
+    """An admin's upload takes the place of the saved master, with no
+    run. Saved as a new version (source 'upload'), so the one it
+    replaces is kept and can be put back. Raises MasterError when the
+    workbook cannot be read as a master."""
+    stats = _master_stats(content)
+    with db.connect() as conn:
+        before = _lock_masters(conn, store_id)
+        new_id = _insert_master(conn, store_id, filename, content, stats,
+                                'upload', actor, None, True)
+        _audit(conn, store_id, actor, 'master_replaced',
+               {'new_version': new_id,
+                'replaced_version': before['id'] if before else None,
+                'rows': stats[0], 'unpaid': stats[1]})
+    return new_id
+
+
 def restore_master(store_id, master_id, actor):
     """Make an older version current again (as a new version, so nothing
     is ever lost and the restore itself can be undone)."""

@@ -203,13 +203,15 @@ class AccountsCase(unittest.TestCase):
             time.sleep(0.05)
         return job_id, job
 
-    def first_run(self, c, ticket='C400000001'):
+    def first_run(self, c, ticket='C400000001', **more):
         content = master_bytes([row(None, '2026-07-01 17:00.01', ticket,
                                     '11111111AA', 50)])
-        return self.run_recon(c, {
+        data = {
             'master': (io.BytesIO(content), 'Core_Returns_RECONCILED.xlsx'),
             'dc_text': f'{ticket}\t11111111AA\t\t50.00\t\t\t',
-            'asof': '2026-10-05', 'threshold': '60'})
+            'asof': '2026-10-05', 'threshold': '60'}
+        data.update(more)
+        return self.run_recon(c, data)
 
 
 class TestSignIn(AccountsCase):
@@ -1288,7 +1290,7 @@ class TestSavedWork(AccountsCase):
         sue = self.sign_in('sue@saved.test')
         self.assertIsNone(storage.current_master(store['id']))
 
-        job1, job = self.first_run(sue)
+        job1, job = self.first_run(sue, mark_requested='1')
         self.assertEqual(job['status'], 'done', job.get('error'))
         self.assertTrue(job['result']['saved'])
         self.assertEqual(job['result']['master_held'], '')
@@ -1600,6 +1602,106 @@ class TestSavedWork(AccountsCase):
         _, first = storage.master_file(store['id'], v1['id'])
         self.assertEqual(now, first)
         self.assertEqual(len(storage.master_versions(store['id'])), 3)
+
+    def test_credit_requested_is_stamped_only_when_asked(self):
+        """The date goes in Credit Requested once the request email has
+        gone out, so a run does not write it unless the box is checked."""
+        from accounts import storage
+        from recon import master as M
+        store = self.make_store('Stamp Store', 'sam@stamp.test')
+        sam = self.sign_in('sam@stamp.test')
+        page = sam.get('/reconcile').get_data(as_text=True)
+        box = page[page.index('id="markRequested"') - 40:
+                   page.index('id="markRequested"') + 40]
+        self.assertNotIn('checked', box)
+
+        def requested():
+            _, content = storage.master_file(store['id'])
+            path = os.path.join(self.tmp, 'stamp.xlsx')
+            with open(path, 'wb') as fh:
+                fh.write(content)
+            return M.read_master(path)[0][0]['requested']
+
+        _, job = self.first_run(sam, 'C400000061')
+        self.assertEqual(len(job['result']['credit_request']), 1)
+        self.assertIsNone(requested())
+        # still on the request next time, until the box is checked
+        _, job = self.run_recon(sam, {'dc_text': 'C400000061\t11111111AA'
+                                                 '\t\t50.00\t\t\t',
+                                      'asof': '2026-10-06',
+                                      'mark_requested': '1'})
+        self.assertEqual(len(job['result']['credit_request']), 1)
+        self.assertEqual(requested(), '2026-10-06')
+
+    def test_an_admin_can_replace_the_saved_master_without_a_run(self):
+        from accounts import db, storage
+        store = self.make_store('Swap Store', 'sal@swap.test')
+        sal = self.sign_in('sal@swap.test')
+        self.first_run(sal, 'C400000071')
+        v1 = storage.current_master(store['id'])
+        runs_before = len(storage.list_runs(store['id']))
+        fixed = master_bytes([
+            row(None, '2026-07-01 17:00.01', 'C400000071', '11111111AB',
+                50),
+            row(None, '2026-07-02 17:00.01', 'C400000072', '22222222AA',
+                75)])
+
+        def send(c, content, name='Core_Returns_RECONCILED.xlsx'):
+            return self.post(c, '/master/replace', {
+                'master': (io.BytesIO(content), name)},
+                content_type='multipart/form-data')
+
+        page = sal.get('/history').get_data(as_text=True)
+        self.assertIn('Replace the saved master', page)
+        # a plain user cannot, and does not get the form
+        self.post(sal, '/users/add', {'email': 'uri@swap.test',
+                                      'role': 'user'})
+        uri = self.sign_in('uri@swap.test')
+        self.assertNotIn('Replace the saved master',
+                         uri.get('/history').get_data(as_text=True))
+        self.assertEqual(send(uri, fixed).status_code, 403)
+        self.assertEqual(storage.current_master(store['id'])['id'],
+                         v1['id'])
+        # not a master (no "Core Returns" sheet), not a workbook, no file
+        from openpyxl import Workbook
+        other = io.BytesIO()
+        wb = Workbook()
+        wb.active.title = 'Credit Request'
+        wb.save(other)
+        for content, name in ((other.getvalue(), 'Credit_Request.xlsx'),
+                              (b'not a workbook', 'x.xlsx'),
+                              (fixed, 'master.pdf'), (b'', '')):
+            r = send(sal, content, name)
+            self.assertEqual(r.status_code, 302)
+            self.assertEqual(storage.current_master(store['id'])['id'],
+                             v1['id'], name)
+        # the real thing: saved as it is, as a new version, with no run
+        r = send(sal, fixed)
+        self.assertEqual(r.status_code, 302)
+        self.assertIn('/history', r.headers['Location'])
+        v2 = storage.current_master(store['id'])
+        self.assertNotEqual(v2['id'], v1['id'])
+        self.assertEqual((v2['source'], v2['row_count'], v2['unpaid_count']),
+                         ('upload', 2, 2))
+        self.assertEqual(v2['created_email'], 'sal@swap.test')
+        _, now = storage.master_file(store['id'])
+        self.assertEqual(now, fixed)
+        self.assertEqual(len(storage.list_runs(store['id'])), runs_before)
+        self.assertEqual(len(storage.master_versions(store['id'])), 2)
+        self.assertTrue(db.one(
+            "SELECT 1 AS x FROM audit_log WHERE store_id = %s AND "
+            "action = 'master_replaced'", (store['id'],)))
+        page = sal.get('/history').get_data(as_text=True)
+        self.assertIn('The saved master was replaced', page)
+        # the next run starts from it, and the old one can be put back
+        _, job = self.run_recon(sal, {
+            'dc_text': 'C400000072\t22222222AA\t\t75.00\t\t\t',
+            'asof': '2026-10-06'})
+        self.assertEqual(job['result']['inputs']['master_rows'], 2)
+        self.assertEqual(self.post(
+            sal, f'/master/{v1["id"]}/restore').status_code, 302)
+        self.assertEqual(storage.current_master(store['id'])['row_count'],
+                         1)
 
     def test_a_run_that_cannot_be_saved_says_so(self):
         from accounts import storage

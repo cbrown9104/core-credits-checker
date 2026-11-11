@@ -148,6 +148,14 @@ def is_live(job_id):
         return bool(job) and job['status'] in ('queued', 'running')
 
 
+def store_busy(store_id):
+    """True while a run for this store is waiting or working here."""
+    with _lock:
+        return any(j['status'] in ('queued', 'running') and
+                   (_meta.get(k) or {}).get('store_id') == store_id
+                   for k, j in _jobs.items())
+
+
 def get(job_id):
     if not JOB_ID_RE.match(job_id or ''):
         return None
