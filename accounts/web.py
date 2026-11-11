@@ -159,6 +159,27 @@ def _came_from():
     return _FORM_PAGE.get(request.endpoint, '/')
 
 
+def _other_address():
+    """The answer to a request at another address of this site (the
+    Render address, a second domain), or None at the site's own address.
+
+    The sign-in cookie belongs to one address, the one that emailed links
+    point to. A person who works at another address looks signed out
+    there on every visit."""
+    site = mailer.site_url()
+    if not site or request.host.lower() == urlsplit(site).netloc.lower():
+        return None
+    if request.method in ('GET', 'HEAD') and not _wants_json():
+        # 302, not 301: a browser keeps a 301 for good, and the address
+        # is a setting that can change.
+        return redirect(site + request.full_path.rstrip('?'))
+    # A form or a call from a page that was loaded at the other address.
+    # Sent on, it would arrive without the sign-in and the page token.
+    return _refuse(409, 'This site has moved',
+                   f'This site is at {site} now. Open it there and try '
+                   f'again.', site + _came_from(), 'Open it')
+
+
 # Where a sign-in may send someone afterwards: the app's own pages only.
 # Never a sign-in link, sign-out or an action (a crafted ?next= must not be
 # able to walk a person into someone else's link).
@@ -307,6 +328,9 @@ def _before():
         return None
     if 'pms.db_down' in request.environ:
         return _unavailable(request.environ['pms.db_down'])
+    moved = _other_address()
+    if moved is not None:
+        return moved
 
     sx = session.get('sx')
     if sx:

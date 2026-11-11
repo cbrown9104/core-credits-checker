@@ -75,7 +75,7 @@ signed-in service:
 |---|---|
 | `DATABASE_URL` | Postgres connection string. Unset = accounts off, app runs open as before. |
 | `OWNER_EMAIL` | Email(s) of whoever runs the service, comma separated. They sign in like anyone else and get the Stores page. |
-| `APP_BASE_URL` | The public address, e.g. `https://partsmanagersolutions.com`. Emailed links point here. |
+| `APP_BASE_URL` | The public address, e.g. `https://partsmanagersolutions.com`. Emailed links point here. A request at any other address of the site is sent here. |
 | `RESEND_API_KEY` | API key for [Resend](https://resend.com), which sends the sign-in emails. |
 | `MAIL_FROM` | Sender, e.g. `Parts Manager Solutions <signin@partsmanagersolutions.com>`. The domain must be verified with Resend. |
 | `MAIL_REPLY_TO` | Optional. Where a reply to a sign-in email goes. |
