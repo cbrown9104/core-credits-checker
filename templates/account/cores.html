@@ -1,0 +1,424 @@
+{% extends 'account/base.html' %}
+{% block title %}Unpaid Cores — {{ store.name }}{% endblock %}
+{% block subtitle %}Core returns Mopar has not credited to {{ store.name }}{% endblock %}
+{% block container_class %}{% if master %} wide{% endif %}{% endblock %}
+{% block head %}
+<style>
+    .container.wide { max-width: 1500px; }
+    .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+    @media (max-width: 860px) { .tiles { grid-template-columns: 1fr 1fr; } }
+    .tile { display: block; width: 100%; text-align: left; background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 18px; cursor: pointer; font: inherit; }
+    .tile:hover { border-color: #5a8dee; }
+    .tile .n { font-size: 28px; font-weight: 700; color: #fff; }
+    .tile .v { font-size: 15px; color: #c0c0e0; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .tile .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #8a8ab0; margin-top: 8px; }
+    .tile.red .n { color: #f0a0a0; } .tile.amber .n { color: #f0c060; } .tile.blue .n { color: #8ab4f8; }
+    .top { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+    .top > div:first-child { flex: 1; min-width: 280px; }
+    .top h2 { margin-bottom: 4px; }
+    .top .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+    .filters select, .filters input[type="text"] { width: auto; padding: 8px 10px; font-size: 13px; }
+    .filters input[type="text"] { min-width: 230px; }
+    .chip {
+        border: 1px solid #3a3a6a; background: #16213e; color: #8a8ab0; border-radius: 16px;
+        padding: 6px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .chip.on.ready { background: #4a1f28; color: #f0a0a0; border-color: #6b2a36; }
+    .chip.on.asked { background: #1a2e55; color: #8ab4f8; border-color: #2a4a80; }
+    .chip.on.wait { background: #4a3a1a; color: #f0c060; border-color: #6b5a2a; }
+    .chip.on.closed { background: #2a2a4a; color: #c0c0e0; border-color: #5a5a80; }
+    .chip.on.paid { background: #1a3a2a; color: #8cd88c; border-color: #2a6a3a; }
+    .pill.gray { background: #2a2a4a; color: #c0c0e0; }
+    .totals { margin-top: 14px; font-size: 14px; color: #c0c0e0; }
+    .totals b { color: #fff; font-variant-numeric: tabular-nums; }
+    .bulk {
+        display: none; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; padding: 12px 14px;
+        background: #0f3460; border: 1px solid #5a8dee; border-radius: 10px; font-size: 13px;
+    }
+    .bulk.show { display: flex; }
+    .bulk select, .bulk input[type="date"] {
+        width: auto; padding: 7px 9px; font-size: 13px; background: #16213e; color: #e0e0e0;
+        border: 1px solid #3a3a6a; border-radius: 6px; color-scheme: dark;
+    }
+    .bulk .sep { width: 1px; align-self: stretch; background: #3a3a6a; }
+    table.lines { min-width: 1120px; }
+    table.lines th, table.lines td { padding-left: 8px; padding-right: 8px; }
+    table.lines td { vertical-align: top; }
+    table.lines td small { display: block; color: #8a8ab0; font-size: 11px; margin-top: 2px; }
+    table.lines select, table.lines input[type="text"] { padding: 6px 8px; font-size: 13px; }
+    table.lines select { width: 112px; }
+    table.lines input.note { width: 100%; min-width: 220px; }
+    table.lines tr.saved td { background: #1a3a2a; transition: background 0.2s; }
+    table.lines tr.failed td { background: #3e1c24; }
+    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; font-size: 13px; color: #b0b0cc; flex-wrap: wrap; }
+    .pager button[disabled] { opacity: 0.4; cursor: default; }
+    .empty { padding: 26px; text-align: center; color: #b0b0cc; font-size: 14px; }
+    #save-error { display: none; margin-top: 14px; margin-bottom: 0; }
+</style>
+{% endblock %}
+{% block content %}
+{% if not master %}
+<div class="card">
+    <h2>Unpaid Cores</h2>
+    <p class="note" style="margin-bottom:0;">No master is saved for {{ store.name }} yet. Run <a class="plain" href="/reconcile">Full Reconciliation</a> once. The tickets Mopar has not credited show here after that, each with a status and a note you can set.</p>
+</div>
+{% else %}
+<div class="tiles" id="tiles"></div>
+
+<div class="card">
+    <div class="top">
+        <div>
+            <h2>Unpaid core tickets</h2>
+            <p class="note" style="margin-bottom:0;">
+                From the master saved {{ master.created_at|central }}{% if master.created_email %} by {{ master.created_email }}{% endif %}.
+                A ticket is ready for a credit request once it is {{ threshold }} days past its shipment date.
+                <a class="plain" href="/reconcile">Full Reconciliation</a> brings in this week's credit memos and shipments.
+            </p>
+        </div>
+        <div class="acts">
+            <a class="btn-small" href="{{ url_for('accounts.cores_export') }}">Download Excel</a>
+        </div>
+    </div>
+
+    <div class="filters" id="filters">
+        <button type="button" class="chip ready" data-b="ready"></button>
+        <button type="button" class="chip asked" data-b="asked"></button>
+        <button type="button" class="chip wait" data-b="wait"></button>
+        <button type="button" class="chip closed" data-b="closed"></button>
+        <button type="button" class="chip paid" data-b="paid" title="Look up a ticket Mopar has credited"></button>
+        <select id="f-status" aria-label="Status">
+            <option value="any">Any status</option>
+            <option value="none">No status</option>
+            <option value="review">Review</option>
+            <option value="denied">Denied</option>
+        </select>
+        <select id="f-sort" aria-label="Sort">
+            <option value="oldest">Sort: oldest shipment first</option>
+            <option value="value">Sort: largest dollars first</option>
+            <option value="asked">Sort: oldest request first</option>
+            <option value="ticket">Sort: ticket number</option>
+        </select>
+        <input type="text" id="f-q" placeholder="Search ticket, part, claim, memo, note" aria-label="Search">
+    </div>
+    <div class="totals" id="totals" role="status"></div>
+    <div class="bulk" id="bulk">
+        <span id="bulk-n"></span>
+        <select id="bulk-status" aria-label="Status for the picked tickets">
+            <option value="keep">Leave status</option>
+            <option value="">No status</option>
+            <option value="review">Review</option>
+            <option value="denied">Denied</option>
+            <option value="closed">Written off</option>
+        </select>
+        <button type="button" class="btn-small" id="bulk-apply">Set status</button>
+        <span class="sep"></span>
+        <label for="bulk-date">Request sent on</label>
+        <input type="date" id="bulk-date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}">
+        <button type="button" class="btn-small" id="bulk-asked">Mark requested</button>
+        <button type="button" class="btn-small" id="bulk-unasked">Clear request date</button>
+        <span class="sep"></span>
+        <button type="button" class="btn-small" id="bulk-clear">Clear picks</button>
+    </div>
+    <div class="error-msg" id="save-error" role="alert"></div>
+</div>
+
+<div class="table-wrap">
+    <table class="lines">
+        <thead><tr>
+            <th><input type="checkbox" id="pick-all" aria-label="Pick every ticket shown"></th>
+            <th>Shipped</th><th class="num">Age</th><th>Where it stands</th><th>Ticket</th><th>Part</th><th>Claim</th>
+            <th class="num">Amount</th><th>Credit requested</th><th>Status</th><th>Note</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none;"></div>
+</div>
+<div class="pager">
+    <span id="page-info"></span>
+    <span>
+        <button type="button" class="btn-small" id="prev">Previous</button>
+        <button type="button" class="btn-small" id="next">Next</button>
+        <select id="page-size" aria-label="Tickets per page" style="width:auto; padding:6px 8px; font-size:12px;">
+            <option value="50">50 a page</option><option value="200">200 a page</option>
+        </select>
+    </span>
+</div>
+
+<script>
+(function () {
+    var ROWS = {{ rows|tojson }};
+    var TODAY = new Date({{ today.isoformat()|tojson }} + 'T00:00:00');
+    var MASTER = {{ master.id }}, CREDITED = {{ credited }};
+    var STATUS = [['', '—'], ['review', 'Review'], ['denied', 'Denied'], ['closed', 'Written off']];
+    var STAGE = { ready: ['Ready to request', 'red'], asked: ['Requested', 'blue'], wait: ['Not due yet', 'amber'],
+                  nodate: ['No ship date', 'amber'], closed: ['Written off', 'gray'], paid: ['Credited', 'green'] };
+    var CHIPS = { ready: 'Ready to request', asked: 'Requested', wait: 'Not due yet', closed: 'Written off', paid: 'Credited' };
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var f = { on: { ready: true, asked: true, wait: true, closed: false, paid: false }, status: 'any', sort: 'oldest', q: '' };
+    var page = 0, size = 50, picked = {}, shown = [], paidState = 'no';
+    ROWS.forEach(function (r, i) { r.i = i; });
+
+    function $(id) { return document.getElementById(id); }
+    function money(v) { return '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function day(iso) { return /^\d{4}-\d{2}-\d{2}/.test(iso || '') ? new Date(iso.slice(0, 10) + 'T00:00:00') : null; }
+    function fullDate(iso) { var d = day(iso); return d ? MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear() : ''; }
+    function daysAgo(iso) { var d = day(iso); return d ? Math.round((TODAY - d) / 86400000) : null; }
+    function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+    // Where a ticket is counted: a written-off ticket leaves the lists of work to do.
+    function bucket(r) { return r.st === 'paid' ? 'paid' : (r.s === 'closed' ? 'closed' : (r.st === 'nodate' ? 'wait' : r.st)); }
+    function showError(text) { var e = $('save-error'); e.textContent = text || ''; e.style.display = text ? 'block' : 'none'; }
+
+    function matches(r) {
+        if (!f.on[bucket(r)]) return false;
+        if (f.status === 'none' && r.s !== '') return false;
+        if ((f.status === 'review' || f.status === 'denied') && r.s !== f.status) return false;
+        if (f.q) {
+            var hay = (r.t + ' ' + r.p + ' ' + r.c + ' ' + r.m + ' ' + r.n + ' ' + r.rq + ' ' + r.sh).toLowerCase();
+            if (hay.indexOf(f.q) < 0) return false;
+        }
+        return true;
+    }
+    var SORTS = {
+        // no shipment date first: those cannot be aged and need a look
+        oldest: function (a, b) { return a.d.localeCompare(b.d) || a.t.localeCompare(b.t); },
+        value: function (a, b) { return b.a - a.a || a.d.localeCompare(b.d); },
+        asked: function (a, b) { return (a.rq || '9').localeCompare(b.rq || '9') || a.d.localeCompare(b.d); },
+        ticket: function (a, b) { return a.t.localeCompare(b.t); }
+    };
+
+    function send(path, body, done) {
+        var headers = window.guardHeaders();
+        headers['Content-Type'] = 'application/json';
+        fetch(path, { method: 'POST', headers: headers, body: JSON.stringify(body), credentials: 'same-origin' })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }, function () { return { ok: false, body: {} }; }); })
+            .then(function (res) {
+                if (!res.ok) throw new Error(res.body.error || 'That was not saved. Reload the page and try again.');
+                showError('');
+                done(true, res.body);
+            })
+            .catch(function (e) {
+                showError(e.message || 'That was not saved. Check the connection and try again.');
+                done(false, {});
+            });
+    }
+    function apply(r, change) {
+        if ('status' in change) r.s = change.status;
+        if ('note' in change) r.n = change.note;
+    }
+    function saveOne(r, change) {
+        var before = { s: r.s, n: r.n };
+        apply(r, change);
+        send('/api/cores/notes', Object.assign({ tickets: [r.t] }, change), function (ok) {
+            if (!ok) { r.s = before.s; r.n = before.n; }
+            // only this row is drawn again, so text being typed on another row stays
+            var old = document.querySelector('tr[data-i="' + r.i + '"]');
+            if (old) {
+                var fresh = rowEl(r);
+                old.parentNode.replaceChild(fresh, old);
+                fresh.classList.add(ok ? 'saved' : 'failed');
+                setTimeout(function () { fresh.classList.remove('saved'); }, 900);
+            }
+            drawCounts(); drawTotals(); drawBulk();
+        });
+    }
+
+    function rowEl(r) {
+        var b = bucket(r), tr = el('tr'); tr.dataset.i = r.i;
+        var td = el('td'); var cb = el('input'); cb.type = 'checkbox'; cb.checked = !!picked[r.i];
+        cb.setAttribute('aria-label', 'Pick ' + r.t);
+        cb.addEventListener('change', function () { if (cb.checked) picked[r.i] = true; else delete picked[r.i]; drawBulk(); });
+        td.appendChild(cb); tr.appendChild(td);
+
+        td = el('td', 'nowrap', fullDate(r.d) || '—'); td.title = r.sh;
+        tr.appendChild(td);
+
+        td = el('td', 'num'); td.appendChild(document.createTextNode(r.age === null ? '' : r.age + (r.age === 1 ? ' day' : ' days')));
+        if (b === 'wait' && r.due) td.appendChild(el('small', '', 'ready ' + fullDate(r.due)));
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); var stage = STAGE[b === 'closed' ? 'closed' : r.st] || [r.st, 'blue'];
+        td.appendChild(el('span', 'pill ' + stage[1], stage[0]));
+        if (r.m) td.appendChild(el('small', '', 'memo ' + r.m));
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); td.appendChild(el('strong', '', r.t)); tr.appendChild(td);
+        tr.appendChild(el('td', 'nowrap', r.p));
+        tr.appendChild(el('td', 'nowrap', r.c));
+        tr.appendChild(el('td', 'num', money(r.a)));
+
+        td = el('td', 'nowrap'); td.appendChild(document.createTextNode(fullDate(r.rq) || r.rq));
+        var ago = daysAgo(r.rq);
+        if (ago !== null && r.st !== 'paid') td.appendChild(el('small', '', ago === 0 ? 'today' : ago + (ago === 1 ? ' day ago' : ' days ago')));
+        tr.appendChild(td);
+
+        td = el('td'); var sel = el('select'); sel.setAttribute('aria-label', 'Status of ' + r.t);
+        STATUS.forEach(function (s) { var o = el('option', '', s[1]); o.value = s[0]; sel.appendChild(o); });
+        sel.value = r.s;
+        sel.addEventListener('change', function () { saveOne(r, { status: sel.value }); });
+        td.appendChild(sel); tr.appendChild(td);
+
+        td = el('td'); var inp = el('input', 'note');
+        inp.type = 'text'; inp.maxLength = 500; inp.value = r.n; inp.setAttribute('aria-label', 'Note for ' + r.t);
+        inp.addEventListener('change', function () { saveOne(r, { note: inp.value.trim() }); });
+        inp.addEventListener('keydown', function (ev) {
+            // Enter saves and moves down the column
+            if (ev.key !== 'Enter') return;
+            ev.preventDefault();
+            var next = tr.nextElementSibling && tr.nextElementSibling.querySelector('input.note');
+            if (next) next.focus(); else inp.blur();
+        });
+        td.appendChild(inp); tr.appendChild(td);
+        return tr;
+    }
+
+    function sums() {
+        var s = { ready: [0, 0], asked: [0, 0], wait: [0, 0], closed: [0, 0], paid: [0, 0] };
+        ROWS.forEach(function (r) { var b = s[bucket(r)]; b[0]++; b[1] += r.a; });
+        return s;
+    }
+    function drawCounts() {
+        var s = sums();
+        Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
+            var k = c.dataset.b, n = k === 'paid' && paidState !== 'yes' ? CREDITED : s[k][0];
+            c.textContent = CHIPS[k] + ' ' + n.toLocaleString('en-US') + (k === 'paid' && paidState === 'loading' ? ' …' : '');
+            c.classList.toggle('on', f.on[k]); c.setAttribute('aria-pressed', f.on[k] ? 'true' : 'false');
+        });
+        var unpaid = [s.ready[0] + s.asked[0] + s.wait[0] + s.closed[0], s.ready[1] + s.asked[1] + s.wait[1] + s.closed[1]];
+        var undated = ROWS.filter(function (r) { return r.st === 'nodate' && r.s !== 'closed'; }).length;
+        var tiles = $('tiles'); tiles.textContent = '';
+        [['ready', 'red', s.ready, 'Ready to request'], ['asked', 'blue', s.asked, 'Requested, waiting on credit'],
+         ['wait', 'amber', s.wait, 'Not due yet' + (undated ? ' (' + undated + ' with no ship date)' : '')],
+         ['all', '', unpaid, 'Unpaid on the master' + (s.closed[0] ? ' (' + s.closed[0] + ' written off)' : '')]].forEach(function (t) {
+            var b = el('button', 'tile ' + t[1]); b.type = 'button';
+            b.appendChild(el('div', 'n', t[2][0].toLocaleString('en-US')));
+            b.appendChild(el('div', 'v', money(t[2][1])));
+            b.appendChild(el('div', 'l', t[3]));
+            b.addEventListener('click', function () {
+                ['ready', 'asked', 'wait', 'closed'].forEach(function (k) { f.on[k] = t[0] === 'all' || t[0] === k; });
+                f.on.paid = false; page = 0; draw();
+            });
+            tiles.appendChild(b);
+        });
+    }
+
+    function pickedRows() { return ROWS.filter(function (r) { return picked[r.i]; }); }
+    function unique(list) { var seen = {}; return list.filter(function (x) { if (seen[x]) return false; seen[x] = true; return true; }); }
+    function disarm(btn) {
+        clearTimeout(btn.timer);
+        if (btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = btn.dataset.label; btn.classList.remove('armed'); }
+    }
+    // Two clicks for anything that rewrites the master: the first turns
+    // the button into the question, the second (a separate click) sends.
+    function confirmed(btn, question) {
+        if (btn.dataset.armed === '1') {
+            if (Date.now() - Number(btn.dataset.at) < 700) return false;
+            disarm(btn); return true;
+        }
+        btn.dataset.armed = '1'; btn.dataset.at = String(Date.now()); btn.dataset.label = btn.textContent;
+        btn.textContent = question; btn.classList.add('armed');
+        btn.timer = setTimeout(function () { disarm(btn); }, 6000);
+        return false;
+    }
+    function drawBulk() {
+        var rows = pickedRows(), total = 0;
+        rows.forEach(function (r) { total += r.a; });
+        $('bulk').classList.toggle('show', rows.length > 0);
+        $('bulk-n').textContent = rows.length + (rows.length === 1 ? ' ticket picked · ' : ' tickets picked · ') + money(total);
+        $('pick-all').checked = shown.length > 0 && shown.every(function (r) { return picked[r.i]; });
+        disarm($('bulk-asked')); disarm($('bulk-unasked'));
+    }
+
+    function drawTotals() {
+        var sum = 0;
+        shown.forEach(function (r) { sum += r.a; });
+        var t = $('totals'); t.textContent = '';
+        [['Showing ', shown.length.toLocaleString('en-US') + (shown.length === 1 ? ' ticket' : ' tickets')], [' · ', money(sum)]].forEach(function (p) {
+            t.appendChild(document.createTextNode(p[0])); t.appendChild(el('b', '', p[1]));
+        });
+    }
+
+    function draw() {
+        drawCounts();
+        shown = ROWS.filter(matches).sort(SORTS[f.sort]);
+        var pages = Math.max(1, Math.ceil(shown.length / size));
+        if (page >= pages) page = pages - 1;
+        var body = $('rows'); body.textContent = '';
+        shown.slice(page * size, page * size + size).forEach(function (r) { body.appendChild(rowEl(r)); });
+        drawTotals();
+        $('empty').style.display = shown.length ? 'none' : 'block';
+        $('empty').textContent = !ROWS.some(function (r) { return r.st !== 'paid'; }) && !f.on.paid ?
+            'Every ticket on the master is credited. Nothing is unpaid.' : 'No ticket matches these filters.';
+        $('page-info').textContent = shown.length ? (page * size + 1) + ' to ' + Math.min(shown.length, page * size + size) + ' of ' + shown.length.toLocaleString('en-US') : '';
+        $('prev').disabled = page === 0; $('next').disabled = page >= pages - 1;
+        drawBulk();
+    }
+
+    // The credited tickets are fetched the first time someone asks for them.
+    function loadCredited() {
+        paidState = 'loading'; drawCounts();
+        fetch('/api/cores/credited', { credentials: 'same-origin' })
+            .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+            .then(function (j) {
+                (j.rows || []).forEach(function (r) { r.i = ROWS.length; ROWS.push(r); });
+                paidState = 'yes'; showError(''); draw();
+            })
+            .catch(function () {
+                paidState = 'no'; f.on.paid = false; draw();
+                showError('The credited tickets could not be loaded. Check the connection and try again.');
+            });
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
+        c.addEventListener('click', function () {
+            var k = c.dataset.b; f.on[k] = !f.on[k]; page = 0;
+            if (k === 'paid' && f.on.paid && paidState === 'no') loadCredited(); else draw();
+        });
+    });
+    $('f-status').addEventListener('change', function () { f.status = this.value; page = 0; draw(); });
+    $('f-sort').addEventListener('change', function () { f.sort = this.value; page = 0; draw(); });
+    $('f-q').addEventListener('input', function () { f.q = this.value.trim().toLowerCase(); page = 0; draw(); });
+    $('prev').addEventListener('click', function () { if (page > 0) { page--; draw(); } });
+    $('next').addEventListener('click', function () { page++; draw(); });
+    $('page-size').addEventListener('change', function () { size = Number(this.value); page = 0; draw(); });
+    $('pick-all').addEventListener('change', function () {
+        var on = this.checked; shown.forEach(function (r) { if (on) picked[r.i] = true; else delete picked[r.i]; }); draw();
+    });
+    $('bulk-clear').addEventListener('click', function () { picked = {}; draw(); });
+    $('bulk-apply').addEventListener('click', function () {
+        var rows = pickedRows(), status = $('bulk-status').value;
+        if (!rows.length || status === 'keep') return;
+        var btn = this, tickets = unique(rows.map(function (r) { return r.t; }));
+        btn.disabled = true;
+        send('/api/cores/notes', { tickets: tickets, status: status }, function (ok) {
+            btn.disabled = false;
+            if (ok) {
+                ROWS.forEach(function (r) { if (tickets.indexOf(r.t) >= 0) r.s = status; });
+                picked = {}; $('bulk-status').value = 'keep';
+            }
+            draw();
+        });
+    });
+    // Writing or clearing the request date makes a new version of the
+    // saved master, so the page is loaded again from it.
+    function requestDate(btn, date) {
+        var tickets = unique(pickedRows().filter(function (r) { return r.st !== 'paid'; }).map(function (r) { return r.t; }));
+        if (!tickets.length) { showError('Pick unpaid tickets first. A credited ticket needs no request.'); return; }
+        if (date === null) { showError('Pick the date the request was sent.'); return; }
+        var n = tickets.length + (tickets.length === 1 ? ' ticket' : ' tickets');
+        if (!confirmed(btn, date ? 'Click again: write ' + fullDate(date) + ' on ' + n : 'Click again: clear the date on ' + n)) return;
+        btn.disabled = true;
+        send('/api/cores/requested', { tickets: tickets, date: date, master: MASTER }, function (ok, body) {
+            btn.disabled = false;
+            if (!ok) return;
+            if (!body.changed) { showError(date ? 'Those tickets already have that date. Nothing was changed.' : 'Those tickets have no request date. Nothing was changed.'); return; }
+            window.location.reload();
+        });
+    }
+    $('bulk-asked').addEventListener('click', function () { requestDate(this, $('bulk-date').value || null); });
+    $('bulk-unasked').addEventListener('click', function () { requestDate(this, ''); });
+    draw();
+})();
+</script>
+{% endif %}
+{% endblock %}

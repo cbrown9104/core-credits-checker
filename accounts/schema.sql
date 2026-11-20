@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS masters (
     row_count       INTEGER NOT NULL DEFAULT 0,
     unpaid_count    INTEGER,
     unpaid_amount   NUMERIC(14, 2),
-    source          TEXT NOT NULL,          -- run | upload | restore
+    source          TEXT NOT NULL,          -- run | upload | restore | edit
     -- why a version from a run was kept but not made current ('' = normal)
     held_reason     TEXT NOT NULL DEFAULT '',
     run_id          TEXT,
@@ -290,3 +290,19 @@ CREATE TABLE IF NOT EXISTS sc_uploads (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS sc_uploads_store ON sc_uploads (store_id, id DESC);
+
+-- ── Unpaid Cores ────────────────────────────────────────────────────────
+-- What a store typed on a control ticket of its master: a status and a
+-- note. The ticket's own facts (shipment, part, amount, the date credit
+-- was requested) stay in the master workbook.
+CREATE TABLE IF NOT EXISTS core_notes (
+    store_id        BIGINT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    -- the control ticket as the master has it, in capitals
+    ticket          TEXT NOT NULL,
+    -- '' | review | denied | closed
+    status          TEXT NOT NULL DEFAULT '',
+    note            TEXT NOT NULL DEFAULT '',
+    changed_email   TEXT NOT NULL DEFAULT '',
+    changed_at      TIMESTAMPTZ,
+    PRIMARY KEY (store_id, ticket)
+);
