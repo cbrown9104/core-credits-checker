@@ -386,13 +386,17 @@ class TestMatch(unittest.TestCase):
             [receipt('11111111AA', 1, '5000009', 'EA1116',
                      day=D(2026, 11, 16)),
              receipt('11111111AA', 1, '5000008', 'EA1105',
-                     day=D(2026, 11, 5))])
+                     day=D(2026, 11, 5)),
+             receipt('11111111AA', 1, '', 'RO12345',
+                     day=D(2026, 11, 17))])
         received, how, hint = got[1]
         self.assertEqual((received, how), (0, ''))
         self.assertIn('order EA1116', hint)
         self.assertIn('on 11/16', hint)
         # received before the order was placed: it cannot be this one
         self.assertNotIn('EA1105', hint)
+        # bought on a repair order, with no shipper: not a shipment
+        self.assertNotIn('RO12345', hint)
 
     def test_core_charges_and_ignored_parts_are_left_out(self):
         got = match.match(

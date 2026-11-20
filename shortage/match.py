@@ -142,9 +142,11 @@ def match(lines, receipts, ignored=()):
         if w['how'] in (SUPERSEDED, NEAR_PART) and w['via'] is not None:
             hint = f'Received as {w["via"].raw or w["via"].part}.'
         if w['need'] > 0:
-            # a receipt from before the order was placed cannot be it
+            # A receipt from before the order was placed cannot be it. A
+            # receipt with no shipper number is a repair-order purchase,
+            # not a shipment.
             spare = sorted((p for p in by['part'].get(w['part'], [])
-                            if p.free > 0 and not (
+                            if p.free > 0 and p.shipper and not (
                                 w['since'] and p.day and p.day < w['since'])),
                            key=lambda p: (p.day is None, p.day))[:HINTS]
             if spare:
