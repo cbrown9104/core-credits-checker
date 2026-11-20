@@ -255,6 +255,22 @@ class TestInvoice(unittest.TestCase):
                          [('6000001', 'AR2001')])
         self.assertTrue(inv['complete'])
 
+    def test_a_shipper_named_again_by_its_number_alone(self):
+        text = (head(1) +
+                block('09999', '6000002', '550826', 'S', '2026-08-26') +
+                head(2) +
+                item('68807529AA', 'CAMSHAFT', 4, 367.00, dc=13) +
+                '       -6000002 ORD#: 550826 O/T:S DATE: 2026-08-26\n'
+                '     53022263AF SUPERCEDED TO     68807529AA\n' +
+                subtotal(1468.00) + summary(1468.00))
+        inv = invoice.parse_invoice_text(text)[0]
+        only = inv['lines'][0]
+        self.assertEqual((only['shipper'], only['order_no'], only['alt_part'],
+                          only['detail']),
+                         ('6000002', '550826', '53022263AF',
+                          '53022263AF SUPERCEDED TO 68807529AA'))
+        self.assertTrue(inv['complete'])
+
     def test_text_that_is_not_an_invoice_gives_nothing(self):
         self.assertEqual(invoice.parse_invoice_text('CREDIT MEMO\n1 2 3'), [])
 

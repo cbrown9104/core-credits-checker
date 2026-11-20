@@ -28,8 +28,9 @@ HEAD_END_RE = re.compile(r'^\s*NO\s+NBR\b')
 BLOCK_RE = re.compile(
     r'^\s*(\d{5})\d{2}-(\d{5,9})\s+ORD#:\s*(\S*)\s+O/T:\s*([A-Z0-9]?)\s*'
     r'DATE:\s*(\d{4}-\d{2}-\d{2})?(?:\s+\S.*)?$')
-# After a page break the open shipper is named again, in a short form.
-CONTINUED_RE = re.compile(r'^\s*\S*\s*SHI-\d{5,9}\s+ORD#:')
+# After a page break the open shipper is named again, in a short form:
+# "REV SHI-6782626 ORD#: ..." or just "-6683319 ORD#: ...".
+CONTINUED_RE = re.compile(r'^\s*(?:\S+\s+)?(?:SHI)?-\d{5,9}\s+ORD#:')
 # line, part, description, qty, unit price, gross, discount code, percent,
 # discount, net, and a price letter that some lines do not have
 ITEM_RE = re.compile(
