@@ -18,7 +18,7 @@
 {% endblock %}
 {% block content %}
 <div class="card legal">
-    <p class="dim">Last updated November 11, 2026</p>
+    <p class="dim">Last updated {% block legal_date %}November 11, 2026{% endblock %}</p>
     {% block legal %}{% endblock %}
     <p class="dim" style="margin:22px 0 0;"><a class="plain" href="{{ url_for('accounts.terms') }}">Terms</a> &middot; <a class="plain" href="{{ url_for('accounts.privacy') }}">Privacy</a> &middot; <a class="plain" href="/">Home</a></p>
 </div>
