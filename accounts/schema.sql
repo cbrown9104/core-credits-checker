@@ -201,9 +201,12 @@ CREATE TABLE IF NOT EXISTS sc_invoices (
     facing_pdc      TEXT NOT NULL DEFAULT '',
     -- NET INVOICE AMOUNT as printed (NULL: the copy had no SUMMARY page)
     net_total       NUMERIC(14, 2),
+    -- the part lines after discount, plus the charges
     lines_total     NUMERIC(14, 2) NOT NULL DEFAULT 0,
-    -- the SUMMARY page was read and the lines add up to it
+    -- the SUMMARY page was read and the lines and charges add up to it
     complete        BOOLEAN NOT NULL DEFAULT FALSE,
+    -- charges that are not parts: {"ARC45012": ["TRANSPORTATION CHARGE", 602.51]}
+    charges         JSONB NOT NULL DEFAULT '{}'::jsonb,
     pages           INTEGER NOT NULL DEFAULT 0,
     filename        TEXT NOT NULL DEFAULT '',
     done            BOOLEAN NOT NULL DEFAULT FALSE,
@@ -228,11 +231,13 @@ CREATE TABLE IF NOT EXISTS sc_lines (
     order_type      TEXT NOT NULL DEFAULT '',
     order_date      DATE,
     part            TEXT NOT NULL,
+    -- the number that was ordered, when the invoice says it was superseded
+    alt_part        TEXT NOT NULL DEFAULT '',
     description     TEXT NOT NULL DEFAULT '',
     qty             INTEGER NOT NULL DEFAULT 0,
     unit_price      NUMERIC(12, 2) NOT NULL DEFAULT 0,
     net             NUMERIC(14, 2) NOT NULL DEFAULT 0,
-    kind            TEXT NOT NULL DEFAULT 'part',   -- part | core
+    kind            TEXT NOT NULL DEFAULT 'part',   -- part | core | free
     detail          TEXT NOT NULL DEFAULT '',
     received        INTEGER NOT NULL DEFAULT 0,
     how             TEXT NOT NULL DEFAULT '',

@@ -2,10 +2,10 @@
 
 A receipt counts for a line when the part number is the same and either
 the shipper number or the order number is the same. After the exact
-matches comes one near match: the same shipper or order with a part
-number that differs only in its last letter (a superseded suffix). A
-receipt is used once: its quantity is shared out, never counted for two
-lines.
+matches come two near ones, both on the same shipper or order: the part
+number the invoice says was superseded, and a part number that differs
+only in its last letter. A receipt is used once: its quantity is shared
+out, never counted for two lines.
 
 An order number that is only close (EA1113 against EA1116) is never
 counted. Daily order numbers end in the date, so a close number is a
@@ -19,10 +19,12 @@ from .receipts import part_key
 # How a line found its receipts, best first.
 BY_SHIPPER = 'shipper'
 BY_ORDER = 'order'
+SUPERSEDED = 'superseded'
 NEAR_PART = 'near_part'
 HOW_TEXT = {
     BY_SHIPPER: 'Matched by shipper number',
     BY_ORDER: 'Matched by order number',
+    SUPERSEDED: 'Received under the part number that was ordered',
     NEAR_PART: 'Received under a different suffix',
 }
 HINTS = 2
@@ -44,8 +46,8 @@ class _Pool:
 
 
 def match(lines, receipts, ignored=()):
-    """lines: dicts with id, part, shipper, order_no, order_date, qty,
-    kind, sort.
+    """lines: dicts with id, part, alt_part, shipper, order_no,
+    order_date, qty, kind, sort.
     receipts: dicts with part (already a part_key), shipper, order_no,
     qty, day, part_raw. Returns {line id: (received, how, hint)}."""
     ignored = {part_key(p) for p in ignored}
@@ -80,7 +82,9 @@ def match(lines, receipts, ignored=()):
         if l.get('kind', 'part') != 'part' or l['qty'] <= 0 or \
                 part in ignored:
             continue
-        work.append({'id': l['id'], 'part': part, 'shipper': l['shipper'],
+        work.append({'id': l['id'], 'part': part,
+                     'alt': part_key(l.get('alt_part') or ''),
+                     'shipper': l['shipper'],
                      'order_no': l['order_no'], 'need': l['qty'],
                      'since': l.get('order_date'),
                      'got': 0, 'how': '', 'via': None})
@@ -98,6 +102,15 @@ def match(lines, receipts, ignored=()):
             if not w['how']:
                 w['how'], w['via'] = how, pool
 
+    def superseded(w):
+        if not w['alt']:
+            return []
+        found = by['shipper'].get((w['alt'], w['shipper']), []) if \
+            w['shipper'] else []
+        if w['order_no']:
+            found = found + by['order'].get((w['alt'], w['order_no']), [])
+        return found
+
     def near_part(w):
         base = _base(w['part'])
         if not base:
@@ -113,6 +126,7 @@ def match(lines, receipts, ignored=()):
             (w['part'], w['shipper']), []) if w['shipper'] else []),
         (BY_ORDER, lambda w: by['order'].get(
             (w['part'], w['order_no']), []) if w['order_no'] else []),
+        (SUPERSEDED, superseded),
         (NEAR_PART, near_part),
     )
     # Every exact match is settled before any near match is tried, so a
@@ -125,7 +139,7 @@ def match(lines, receipts, ignored=()):
     out = {}
     for w in work:
         hint = ''
-        if w['how'] == NEAR_PART and w['via'] is not None:
+        if w['how'] in (SUPERSEDED, NEAR_PART) and w['via'] is not None:
             hint = f'Received as {w["via"].raw or w["via"].part}.'
         if w['need'] > 0:
             # a receipt from before the order was placed cannot be it

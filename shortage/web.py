@@ -154,15 +154,17 @@ def _json_rows(lines):
     for l in lines:
         short = max(l['qty'] - l['received'], 0) if l['state'] in (
             'short', 'partial') else 0
+        each = l['net'] / l['qty'] if l['qty'] else l['unit_price']
         out.append({
             'id': l['id'], 'inv': l['number'],
             'd': l['deadline'].isoformat() if l['deadline'] else '',
             'od': l['order_date'].isoformat() if l['order_date'] else '',
-            'st': l['state'], 'part': l['part'], 'desc': l['description'],
+            'st': l['state'], 'part': export.shown_part(l['part']),
+            'desc': l['description'],
             'ord': l['order_no'], 'ot': l['order_type'],
             'shp': l['shipper'], 'pdc': l['pdc'], 'q': l['qty'],
-            'r': l['received'], 'u': float(l['unit_price']),
-            'v': float(short * l['unit_price']), 'net': float(l['net']),
+            'r': l['received'], 'u': round(float(each), 2),
+            'v': round(float(short * each), 2), 'net': float(l['net']),
             'how': HOW_TEXT.get(l['how'], ''), 'hint': l['hint'],
             'det': l['detail'], 's': l['status'], 'c': l['claim_no'],
             'n': l['note']})

@@ -9,28 +9,37 @@ from openpyxl.utils import get_column_letter
 from .match import HOW_TEXT
 
 RESULT = {'short': 'Short', 'partial': 'Partial', 'received': 'Received',
-          'core': 'Core charge', 'ignored': 'Ignored part', 'none': ''}
+          'core': 'Core charge', 'ignored': 'Ignored part',
+          'none': 'No charge'}
 STATUS = {'': '', 'review': 'Review', 'filed': 'Filed', 'paid': 'Paid',
           'denied': 'Denied', 'found': 'Found'}
 COLUMNS = (
     ('Invoice', 20), ('Invoice date', 13), ('Deadline', 13), ('Result', 12),
     ('Part', 15), ('Description', 16), ('Order', 10), ('Type', 6),
     ('Order date', 13), ('PDC', 8), ('Shipper', 11), ('Billed qty', 10),
-    ('Received qty', 12), ('Short qty', 10), ('Each', 11),
+    ('Received qty', 12), ('Short qty', 10), ('Billed each', 12),
     ('Short value', 13), ('Status', 10), ('Claim number', 16), ('Note', 34),
     ('How it matched', 44), ('Printed on the invoice', 50))
 MONEY_COLS, DATE_COLS = (15, 16), (2, 3, 9)
 
 
+def shown_part(part):
+    """The part number as the DMS and the counter know it: the invoice
+    pads short numbers with zeros in front (04429825)."""
+    return part.lstrip('0') or part
+
+
 def _row(l):
     short = max(l['qty'] - l['received'], 0) if l['state'] in (
         'short', 'partial') else 0
+    each = l['net'] / l['qty'] if l['qty'] else l['unit_price']
     how = ' '.join(x for x in (HOW_TEXT.get(l['how'], ''), l['hint']) if x)
     return [l['number'], l['invoice_date'], l['deadline'],
-            RESULT.get(l['state'], l['state']), l['part'], l['description'],
-            l['order_no'], l['order_type'], l['order_date'], l['pdc'],
-            l['shipper'], l['qty'], l['received'], short,
-            float(l['unit_price']), float(short * l['unit_price']),
+            RESULT.get(l['state'], l['state']), shown_part(l['part']),
+            l['description'], l['order_no'], l['order_type'],
+            l['order_date'], l['pdc'], l['shipper'], l['qty'],
+            l['received'], short, round(float(each), 2),
+            round(float(short * each), 2),
             STATUS.get(l['status'], l['status']), l['claim_no'], l['note'],
             how, l['detail']]
 

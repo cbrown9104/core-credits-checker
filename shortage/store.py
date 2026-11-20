@@ -122,9 +122,11 @@ def save_invoice(store_id, inv, filename, actor):
                         'more of it.')
             return 'already', msg
         typed = collections.defaultdict(list)
+        charges = {code: [c['name'], float(c['amount'])]
+                   for code, c in inv['charges'].items()}
         head = (inv['title'], inv['date'], inv['facing_pdc'],
                 inv['net_total'], inv['lines_net'], inv['complete'],
-                inv['pages'], filename)
+                db.jsonb(charges), inv['pages'], filename)
         if old:
             for r in conn.execute(
                     'SELECT shipper, order_no, part, status, claim_no, '
@@ -136,16 +138,17 @@ def save_invoice(store_id, inv, filename, actor):
             conn.execute(
                 'UPDATE sc_invoices SET title = %s, invoice_date = %s, '
                 'facing_pdc = %s, net_total = %s, lines_total = %s, '
-                'complete = %s, pages = %s, filename = %s WHERE id = %s',
+                'complete = %s, charges = %s, pages = %s, filename = %s '
+                'WHERE id = %s',
                 head + (old['id'],))
             invoice_id = old['id']
         else:
             invoice_id = conn.execute(
                 'INSERT INTO sc_invoices (store_id, number, title, '
                 'invoice_date, facing_pdc, net_total, lines_total, '
-                'complete, pages, filename, created_by, created_email) '
-                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) '
-                'RETURNING id',
+                'complete, charges, pages, filename, created_by, '
+                'created_email) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '
+                '%s, %s, %s, %s, %s) RETURNING id',
                 (store_id, inv['number']) + head +
                 ((actor or {}).get('id'), (actor or {}).get('email', ''))
             ).fetchone()['id']
@@ -161,7 +164,8 @@ def save_invoice(store_id, inv, filename, actor):
             rows.append((
                 invoice_id, store_id, l['seq'], l['page'], l['pdc'],
                 l['shipper'], l['order_no'], l['order_type'],
-                l['order_date'], l['part'], l['description'][:60], l['qty'],
+                l['order_date'], l['part'], l['alt_part'],
+                l['description'][:60], l['qty'],
                 l['unit_price'], l['net'], l['kind'], l['detail'],
                 k.get('status', ''), k.get('claim_no', ''),
                 k.get('note', ''), k.get('changed_email', ''),
@@ -170,10 +174,10 @@ def save_invoice(store_id, inv, filename, actor):
             cur.executemany(
                 'INSERT INTO sc_lines (invoice_id, store_id, seq, page, '
                 'pdc, shipper, order_no, order_type, order_date, part, '
-                'description, qty, unit_price, net, kind, detail, status, '
-                'claim_no, note, changed_email, changed_at) VALUES (%s, '
-                '%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '
-                '%s, %s, %s, %s, %s, %s)', rows)
+                'alt_part, description, qty, unit_price, net, kind, '
+                'detail, status, claim_no, note, changed_email, '
+                'changed_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, '
+                '%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)', rows)
     core.audit(store_id, actor, 'sc_invoice_loaded',
                {'number': inv['number'], 'lines': len(lines),
                 'complete': inv['complete'], 'replaced': bool(old)})
@@ -217,8 +221,10 @@ def save_receipts(store_id, parsed):
 
 
 def _state(line, got, ignored):
-    if line['kind'] != 'part':
+    if line['kind'] == 'core':
         return 'core'
+    if line['kind'] != 'part':
+        return 'none'           # billed at nothing: no money to claim
     if part_key(line['part']) in ignored:
         return 'ignored'
     if line['qty'] <= 0:
@@ -237,8 +243,9 @@ def rematch(store_id):
         s = get_settings(store_id, conn)
         ignored = {part_key(p) for p in s['ignored_parts']}
         lines = conn.execute(
-            'SELECT l.id, l.part, l.shipper, l.order_no, l.order_date, '
-            'l.qty, l.kind, l.seq, l.pdc, l.received, l.how, l.hint, '
+            'SELECT l.id, l.part, l.alt_part, l.shipper, l.order_no, '
+            'l.order_date, l.qty, l.kind, l.seq, l.pdc, l.received, l.how, '
+            'l.hint, '
             'l.state, l.deadline, i.invoice_date, i.number FROM sc_lines l '
             'JOIN sc_invoices i ON i.id = l.invoice_id WHERE l.store_id = '
             '%s', (store_id,)).fetchall()
@@ -271,7 +278,9 @@ def rematch(store_id):
 _SHORT = "l.state IN ('short', 'partial')"
 # A short line is open until someone files a claim for it or closes it.
 _OPEN = _SHORT + " AND l.status IN ('', 'review')"
-_VALUE = '(l.qty - l.received) * l.unit_price'
+# what the store was billed for the pieces it did not receive (the net
+# amount: a promotion discount is already off)
+_VALUE = 'round((l.qty - l.received) * l.net / NULLIF(l.qty, 0), 2)'
 
 
 def facts(store_id, today):

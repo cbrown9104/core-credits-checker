@@ -7,8 +7,9 @@ such as
     0999900-5000002 ORD#: EA1030 O/T:E DATE: 2026-10-30
 
 (PDC 09999, shipper 5000002, order EA1030, order type E), lists its part
-lines, and ends with SUBTOTAL. The last page has SUMMARY with the
-invoice totals. A PDF with no SUMMARY page is a cut-off copy.
+lines and its charges (transportation, deposits), and ends with
+SUBTOTAL. The last page has SUMMARY with the invoice totals. A PDF with
+no SUMMARY page is a cut-off copy.
 """
 import datetime
 import re
@@ -23,15 +24,23 @@ PAGE_RE = re.compile(r'^\s*PAGE\s*:\s*(\d+)\s*$')
 TITLE_RE = re.compile(r'^\s{4,}([A-Z][A-Z ]*INVOICE)\s*$')
 HEAD_START_RE = re.compile(r'^\s*FCA US LLC\s*$')
 HEAD_END_RE = re.compile(r'^\s*NO\s+NBR\b')
+# The date can be missing, and a promotion code can follow it.
 BLOCK_RE = re.compile(
     r'^\s*(\d{5})\d{2}-(\d{5,9})\s+ORD#:\s*(\S*)\s+O/T:\s*([A-Z0-9]?)\s*'
-    r'DATE:\s*(\d{4}-\d{2}-\d{2})?\s*$')
+    r'DATE:\s*(\d{4}-\d{2}-\d{2})?(?:\s+\S.*)?$')
+# After a page break the open shipper is named again, in a short form.
+CONTINUED_RE = re.compile(r'^\s*\S*\s*SHI-\d{5,9}\s+ORD#:')
+# line, part, description, qty, unit price, gross, discount code, percent,
+# discount, net, and a price letter that some lines do not have
 ITEM_RE = re.compile(
     r'^\s*(\d{1,4})\s+(\S{3,15})\s+(.*?)\s*(-?\d{1,6})\s+' + _MONEY +
-    r'\s+' + _MONEY + r'\s+(\d{1,2})\s+(\d{1,3})\s+' + _MONEY + r'\s+' +
-    _MONEY + r'\s+([A-Z0-9])\s*$')
-DEPOSIT_RE = re.compile(r'^\s*ARC\w*\s+DEPOSIT PART VALUES\s+' + _MONEY +
-                        r'\s+' + _MONEY + r'\s*$')
+    r'\s+' + _MONEY + r'\s+([A-Z0-9]{1,2})\s+(\d{1,3})\s+' + _MONEY +
+    r'\s+' + _MONEY + r'(?:\s+([A-Z0-9]))?\s*$')
+# A charge that is not a part: transportation, a deposit, a chargeback.
+CHARGE_RE = re.compile(r'^\s*(?:\d{1,4}\s+)?(ARC\d+)\s+(\S.*?)\s+' + _MONEY +
+                       r'\s+' + _MONEY + r'\s*$')
+SUPERSEDED_RE = re.compile(r'^\s*([A-Z0-9]{5,15})\s+SUPERCEDED TO\s+'
+                           r'([A-Z0-9]{5,15})\s*$')
 SUBTOTAL_RE = re.compile(r'^\s*SUBTOTAL\s+' + _MONEY + r'\s+' + _MONEY +
                          r'\s*$')
 SUMMARY_RE = re.compile(r'^\s*SUMMARY\s*:?\s*$')
@@ -81,30 +90,25 @@ def _new_invoice(number):
     m = re.match(r'^(\d{5})', number)
     return {'number': number, 'title': '', 'date': None, 'pages': 0,
             'facing_pdc': m.group(1) if m else '',
-            'lines': [], 'deposits': Decimal('0'), 'gross_total': None,
+            'lines': [], 'charges': {}, 'gross_total': None,
             'net_total': None, 'has_summary': False, 'warnings': []}
 
 
 def _finish(inv):
-    lines = inv['lines']
-    inv['lines_net'] = sum((l['net'] for l in lines), Decimal('0')) + \
-        inv['deposits']
-    inv['lines_gross'] = sum((l['gross'] for l in lines), Decimal('0')) + \
-        inv['deposits']
-    pairs = [(inv['lines_net'], inv['net_total']),
-             (inv['lines_gross'], inv['gross_total'])]
-    printed = [(a, b) for a, b in pairs if b is not None]
-    inv['complete'] = bool(printed) and any(abs(a - b) <= CENT
-                                            for a, b in printed)
+    # NET INVOICE AMOUNT is the part lines after discount, plus the charges
+    inv['lines_net'] = sum((l['net'] for l in inv['lines']), Decimal('0')) + \
+        sum((c['amount'] for c in inv['charges'].values()), Decimal('0'))
+    inv['complete'] = inv['net_total'] is not None and \
+        abs(inv['lines_net'] - inv['net_total']) <= CENT
     if not inv['has_summary']:
         inv['warnings'].append(
             'This copy has no SUMMARY page. It is cut off: lines after '
             'the last page in the file are missing.')
     elif not inv['complete']:
         inv['warnings'].append(
-            f'The lines read add up to ${inv["lines_net"]:,.2f}. The '
-            f'invoice says NET INVOICE AMOUNT '
-            f'${(inv["net_total"] or 0):,.2f}.')
+            f'The lines and charges read add up to '
+            f'${inv["lines_net"]:,.2f}. The invoice says NET INVOICE '
+            f'AMOUNT ${(inv["net_total"] or 0):,.2f}.')
     return inv
 
 
@@ -165,6 +169,8 @@ def parse_invoice_text(text):
                     'gross_total'
                 inv[key] = _money(m.group(2))
             continue
+        if CONTINUED_RE.match(line):
+            continue
         m = BLOCK_RE.match(line)
         if m:
             if block is not None and block['shipper'] == m.group(2):
@@ -178,20 +184,31 @@ def parse_invoice_text(text):
         m = ITEM_RE.match(line)
         if m and block is not None:
             part = re.sub(r'[^A-Z0-9]', '', m.group(2).upper())
+            gross = _money(m.group(6))
+            kind = 'core' if CORE_RE.match(part) else \
+                'part' if gross else 'free'
             last = dict(block, seq=len(inv['lines']) + 1, page=page,
-                        part=part, description=m.group(3).strip(),
-                        qty=int(m.group(4)), unit_price=_money(m.group(5)),
-                        gross=_money(m.group(6)), net=_money(m.group(10)),
-                        kind='core' if CORE_RE.match(part) else 'part',
-                        detail='')
+                        part=part, alt_part='',
+                        description=m.group(3).strip(), qty=int(m.group(4)),
+                        unit_price=_money(m.group(5)), gross=gross,
+                        net=_money(m.group(10)), kind=kind, detail='')
             inv['lines'].append(last)
             continue
-        m = DEPOSIT_RE.match(line)
+        m = CHARGE_RE.match(line)
         if m:
-            inv['deposits'] += _money(m.group(2))
+            charge = inv['charges'].setdefault(
+                m.group(1), {'name': re.sub(r'\s+', ' ', m.group(2)),
+                             'amount': Decimal('0')})
+            charge['amount'] += _money(m.group(4))
             continue
         if SUBTOTAL_RE.match(line):
             continue
+        m = SUPERSEDED_RE.match(line)
+        if m and last is not None:
+            # the DMS may hold the receipt under the number that was ordered
+            other = [x for x in m.groups() if x != last['part']]
+            if len(other) == 1:
+                last['alt_part'] = other[0]
         if last is not None and len(last['detail']) < DETAIL_MAX:
             piece = re.sub(r'\s+', ' ', line.strip())
             last['detail'] = (last['detail'] + ' | ' + piece

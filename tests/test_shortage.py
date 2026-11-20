@@ -47,42 +47,54 @@ def head(page, number=NUMBER, date='NOVEMBER 07, 2026',
     return HEAD.format(page=page, number=number, date=date, title=title)
 
 
-def block(pdc, shipper, order, otype, date):
-    return f'{pdc}00-{shipper} ORD#: {order} O/T:{otype} DATE: {date}\n'
+def block(pdc, shipper, order, otype, date, more=''):
+    return f'{pdc}00-{shipper} ORD#: {order} O/T:{otype} DATE: {date}{more}\n'
 
 
-def item(part, desc, qty, unit, dc=12, ps='B'):
+def m(v, width):
+    """Money as the invoice prints it: no zero before the point."""
+    text = f'{v:.2f}'
+    return (text[1:] if text.startswith('0.') else text).rjust(width)
+
+
+def item(part, desc, qty, unit, dc=12, ps='B', pct=0, disc=0.0):
     gross = qty * unit
-    return (f'   1 {part:<10} {desc:<8} {qty:>5} {unit:>9.2f} {gross:>10.2f} '
-            f'{dc} 0        .00 {gross:>9.2f} {ps}\n')
+    return (f'   1 {part:<10} {desc:<8} {qty:>5} {m(unit, 9)} '
+            f'{m(gross, 10)} {dc} {pct}  {m(disc, 9)} '
+            f'{m(gross - disc, 9)} {ps}').rstrip() + '\n'
 
 
 def subtotal(v):
-    return f'                        SUBTOTAL  {v:>12.2f}          {v:>12.2f}\n\n'
+    return f'                        SUBTOTAL  {m(v, 12)}          {m(v, 12)}\n\n'
 
 
-def summary(v):
-    return ('\nSUMMARY:\n-------\n'
-            f'    TOTAL GROSS AMOUNT                      {v:>12.2f}\n'
-            '    DISCOUNTS EARNED                                 .00\n\n'
-            f'    NET INVOICE AMOUNT                      {v:>12.2f}\n')
+def summary(gross, net=None, discounts=0.0, charges=()):
+    out = ('\nSUMMARY:\n-------\n'
+           f'    TOTAL GROSS AMOUNT                      {m(gross, 12)}\n'
+           f'    DISCOUNTS EARNED                        {m(discounts, 12)}\n\n')
+    for code, name, amount in charges:
+        out += f'    {code}   {name:<28}{m(amount, 12)}\n'
+    return out + ('\n    NET INVOICE AMOUNT                      '
+                  f'{m(gross if net is None else net, 12)}\n')
 
 
 PAGE_1 = (
     head(1) +
     block('09999', '5000001', 'AR1001', 'A', '2026-10-26') +
     item('11111111AA', 'BATTERY', 18, 10.00, ps='H') +
-    '     **SUPPLIER PACKING SLIP # : 730-1\n' +
+    '     **SUPPLIER PACKING SLIP # : 730-1\n'
+    '     11111110AA SUPERCEDED TO    11111111AA\n' +
     subtotal(180.00) +
     block('09999', '5000002', 'EA1030', 'E', '2026-10-30') +
     item('22222222AB', 'OIL', 12, 10.00, ps='D') +
     '     EXAMPLE PARTS DEPT\n' +
     item('22222222AB', 'OIL', 12, 10.00, ps='D') +
     '     EXAMPLE PARTS DEPT\n')
+# The page breaks inside shipper 5000002: the next page names it again.
 PAGE_2 = (
     head(2) +
-    '     **SUPPLIER PACKING SLIP # : X3\n\n' +
-    block('09999', '5000002', 'EA1030', 'E', '2026-10-30') +
+    'REV SHI-5000002 ORD#: 999999 O/T:O DATE:\n'
+    '     **SUPPLIER PACKING SLIP # : X3\n' +
     item('22222222AB', 'OIL', 12, 10.00, ps='D') +
     subtotal(360.00) +
     block('09998', '5000003', '551030', 'S', '2026-10-30') +
@@ -94,8 +106,21 @@ PAGE_2 = (
     block('09999', '5000004', 'AR1002', 'A', '2026-11-03') +
     item('R4444444AC', 'VALVE', 2, 300.00, ps='A') +
     item('U4444444AC', 'VALVE', 2, 100.00, dc=99, ps='N') +
-    subtotal(800.00))
-PAGE_3 = head(3) + summary(2082.00)
+    subtotal(800.00) +
+    block('09997', '5000005', 'SD0921', 'G', '2026-09-21',
+          ' PROMO CODE: SDM') +
+    item('99999991AA', 'LAMP', 6, 14.80, dc='H3', pct=12, disc=10.66) +
+    subtotal(78.14) +
+    block('09999', '5000006', '4510**', 'S', '2026-11-05') +
+    item('99999992AB', 'SVCE KIT', 1, 0.00, dc=99, ps='') +
+    '     **VIN                   # : 1C4EXAMPLE0000000\n' +
+    subtotal(0.00) +
+    block('09999', '5000007', '285230', 'M', '2026-11-06') +
+    '0001 ARC45012   TRANSPORTATION CHARGE           1.88                     1.88\n' +
+    subtotal(1.88))
+PAGE_3 = head(3) + summary(2120.80, net=2162.02, discounts=10.66, charges=(
+    ('ARC31101', 'DEPOSIT PART VALUES', 50.00),
+    ('ARC45012', 'TRANSPORTATION CHARGE', 1.88)))
 FULL = PAGE_1 + PAGE_2 + PAGE_3
 CUT_OFF = PAGE_1
 
@@ -121,6 +146,7 @@ SCANS = (
     csv_row('EA1030', '11/03/26', 'CH22222222-AB', 12, shipper='5000002') +
     csv_row('551030', '11/03/26', 'CH3333333-AC', 1, shipper='5000003') +
     csv_row('AR1002', '11/04/26', 'CHR4444444-AC', 2, shipper='5000004') +
+    csv_row('SD0921', '11/04/26', 'CH99999991-AA', 6, shipper='5000005') +
     csv_row('700001', '11/02/26', 'CH55555555-AA', 1, kind='SLS') +
     csv_row('', '11/02/26', 'CH66666666-AA', 0, kind='ADD') +
     csv_row('RO1', '11/02/26', 'CH77777777-AA', -1, code='IO') +
@@ -157,21 +183,34 @@ class TestInvoice(unittest.TestCase):
             ('5000002', 'EA1030', '22222222AB', 12),
             ('5000003', '551030', '03333333AC', 1),
             ('5000004', 'AR1002', 'R4444444AC', 2),
-            ('5000004', 'AR1002', 'U4444444AC', 2)])
+            ('5000004', 'AR1002', 'U4444444AC', 2),
+            ('5000005', 'SD0921', '99999991AA', 6),
+            ('5000006', '4510**', '99999992AB', 1)])
         first = inv['lines'][0]
         self.assertEqual((first['pdc'], first['order_type'],
                           first['order_date'], float(first['unit_price']),
                           float(first['net'])),
                          ('09999', 'A', D(2026, 10, 26), 10.0, 180.0))
         self.assertIn('SUPPLIER PACKING SLIP # : 730-1', first['detail'])
+        # the DMS may hold the receipt under the number that was ordered
+        self.assertEqual(first['alt_part'], '11111110AA')
         # the line before the page break keeps the note printed after it
         self.assertIn('X3', inv['lines'][2]['detail'])
         self.assertEqual(inv['lines'][4]['pdc'], '09998')
-        self.assertEqual(float(inv['deposits']), 50.0)
-        self.assertEqual([l['kind'] for l in inv['lines']][-2:],
-                         ['part', 'core'])
-        self.assertEqual(float(inv['net_total']), 2082.0)
-        self.assertEqual(float(inv['lines_net']), 2082.0)
+        # a promotion order: letters in the discount code, and a discount
+        promo = inv['lines'][7]
+        self.assertEqual((promo['pdc'], promo['order_type'],
+                          float(promo['gross']), float(promo['net'])),
+                         ('09997', 'G', 88.8, 78.14))
+        self.assertEqual([l['kind'] for l in inv['lines']][-4:],
+                         ['part', 'core', 'part', 'free'])
+        # charges are not part lines, and they count toward the total
+        self.assertEqual({code: (c['name'], float(c['amount']))
+                          for code, c in inv['charges'].items()},
+                         {'ARC31101': ('DEPOSIT PART VALUES', 50.0),
+                          'ARC45012': ('TRANSPORTATION CHARGE', 1.88)})
+        self.assertEqual(float(inv['net_total']), 2162.02)
+        self.assertEqual(float(inv['lines_net']), 2162.02)
         self.assertTrue(inv['complete'])
         self.assertEqual(inv['warnings'], [])
 
@@ -198,8 +237,23 @@ class TestInvoice(unittest.TestCase):
         found = invoice.parse_invoice_text(FULL + second)
         self.assertEqual([(i['number'], i['title'], len(i['lines']),
                            i['complete']) for i in found],
-                         [(NUMBER, 'MOPAR PARTS INVOICE', 7, True),
+                         [(NUMBER, 'MOPAR PARTS INVOICE', 9, True),
                           (other, 'AER INVOICE', 1, True)])
+
+    def test_a_shipper_named_again_in_full_after_a_page_break(self):
+        text = (head(1, title='AER INVOICE') +
+                block('09999', '6000001', 'AR2001', 'A', '2026-11-04') +
+                item('56029818AC', 'STARTER', 1, 204.00) +
+                head(2, title='AER INVOICE') +
+                '0999900-6000001 ORD#: 999999 O/T:A DATE:\n'
+                '     ARC31101   DEPOSIT PART VALUES          75.00'
+                '                       75.00\n' + subtotal(279.00) +
+                summary(204.00, net=279.00, charges=(
+                    ('ARC31101', 'DEPOSIT PART VALUES', 75.00),)))
+        inv = invoice.parse_invoice_text(text)[0]
+        self.assertEqual([(l['shipper'], l['order_no']) for l in inv['lines']],
+                         [('6000001', 'AR2001')])
+        self.assertTrue(inv['complete'])
 
     def test_text_that_is_not_an_invoice_gives_nothing(self):
         self.assertEqual(invoice.parse_invoice_text('CREDIT MEMO\n1 2 3'), [])
@@ -209,17 +263,17 @@ class TestReceipts(unittest.TestCase):
     def test_purchase_rows_become_receipts(self):
         got = receipts.read_receipts(SCANS, 'CURRENT SCANS.csv')
         self.assertEqual(got['prefix'], 'CH')
-        self.assertEqual(got['rows'], 9)
+        self.assertEqual(got['rows'], 10)
         self.assertEqual((got['first'], got['last']),
                          (D(2026, 11, 2), D(2026, 11, 4)))
         self.assertEqual(got['days'][D(2026, 11, 2)], (6, 4))
         rows = got['receipts']
-        self.assertEqual(len(rows), 7)      # the SLS and ADD rows are not
+        self.assertEqual(len(rows), 8)      # the SLS and ADD rows are not
         self.assertEqual(
             (rows[0]['part'], rows[0]['order_no'], rows[0]['shipper'],
              rows[0]['qty'], rows[0]['day']),
             ('11111111AA', 'AR1001', '5000001', 18, D(2026, 11, 2)))
-        self.assertEqual(len({r['rec_key'] for r in rows}), 7)
+        self.assertEqual(len({r['rec_key'] for r in rows}), 8)
 
     def test_part_numbers_compare_equal_across_the_two_files(self):
         for dms, billed in (('CH68524020-AB', '68524020AB'),
@@ -244,7 +298,7 @@ class TestReceipts(unittest.TestCase):
         out = io.BytesIO()
         wb.save(out)
         got = receipts.read_receipts(out.getvalue(), 'scans.xlsx')
-        self.assertEqual(len(got['receipts']), 7)
+        self.assertEqual(len(got['receipts']), 8)
         self.assertEqual(got['receipts'][3]['part'], '3333333AC')
 
     def test_a_file_with_no_record_ids_still_gets_stable_keys(self):
@@ -312,6 +366,18 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(got[2][:2], (1, match.BY_SHIPPER))
         self.assertEqual(got[1][:2], (1, match.NEAR_PART))
         self.assertIn('68381242-AE', got[1][2])
+
+    def test_a_part_received_under_the_number_that_was_ordered(self):
+        billed = line(1, '68762935AA', 1, '5000001', '$$$511')
+        billed['alt_part'] = '68775242AA'
+        got = match.match([billed], [receipt('68775242-AA', 1, '5000001',
+                                             '551112')])
+        self.assertEqual(got[1][:2], (1, match.SUPERSEDED))
+        self.assertIn('68775242-AA', got[1][2])
+        # not without the same shipper or order
+        got = match.match([billed], [receipt('68775242-AA', 1, '5000002',
+                                             '551112')])
+        self.assertEqual(got[1][0], 0)
 
     def test_a_close_order_number_is_a_hint_not_a_match(self):
         got = match.match(
@@ -388,19 +454,19 @@ class TestPages(AccountsCase):
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         answers = {a['name']: a for a in r.get_json()['files']}
         self.assertEqual(answers['W42.pdf']['result'], 'loaded')
-        self.assertIn('7 lines', answers['W42.pdf']['message'])
-        self.assertIn('$2,082.00', answers['W42.pdf']['message'])
+        self.assertIn('9 lines', answers['W42.pdf']['message'])
+        self.assertIn('$2,162.02', answers['W42.pdf']['message'])
         self.assertEqual(answers['scans.csv']['result'], 'loaded')
-        self.assertIn('7 new receipts', answers['scans.csv']['message'])
+        self.assertIn('8 new receipts', answers['scans.csv']['message'])
         self.assertEqual(answers['notes.txt']['result'], 'refused')
         self.assertIn('no column', answers['notes.txt']['message'])
 
         got = self.lines(store)
         self.assertEqual([l['state'] for l in got], [
             'received', 'received', 'received', 'short', 'received',
-            'received', 'core'])
+            'received', 'core', 'received', 'none'])
         self.assertEqual([l['received'] for l in got],
-                         [18, 12, 12, 0, 1, 2, 0])
+                         [18, 12, 12, 0, 1, 2, 0, 6, 0])
         # the facing PDC gets 7 days from the invoice date, the rest 14
         self.assertEqual(got[0]['deadline'], D(2026, 11, 14))
         self.assertEqual(got[4]['deadline'], D(2026, 11, 21))
@@ -415,13 +481,17 @@ class TestPages(AccountsCase):
         view = amy.get(f'/shortages/invoice/{inv["id"]}')
         self.assertEqual(view.status_code, 200)
         self.assertIn(b'22222222AB', view.data)
-        self.assertIn(b'The lines add up to the invoice total', view.data)
+        # shown as the DMS knows it, without the zero the invoice adds
+        self.assertIn(b'"3333333AC"', view.data)
+        self.assertNotIn(b'03333333AC', view.data)
+        self.assertIn(b'add up to the invoice total, $2,162.02', view.data)
+        self.assertIn(b'Transportation charge $1.88', view.data)
 
         # the same files again change nothing
         r = self.send(amy, ('W42.pdf', pdf(FULL)), ('scans.csv', SCANS))
         self.assertEqual([a['result'] for a in r.get_json()['files']],
                          ['already', 'already'])
-        self.assertEqual(len(self.lines(store)), 7)
+        self.assertEqual(len(self.lines(store)), 9)
 
         # a claim number files the line; the open list keeps it, the
         # front page counts it as filed
@@ -454,7 +524,7 @@ class TestPages(AccountsCase):
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(book.data))
         self.assertEqual(wb.sheetnames, ['Shortages', 'All lines'])
-        self.assertEqual(wb['All lines'].max_row, 8)
+        self.assertEqual(wb['All lines'].max_row, 10)
         self.assertEqual(wb['Shortages'].max_row, 1)
         self.assertEqual(amy.get('/shortages/open').status_code, 200)
         self.assertEqual(amy.get('/shortages/open/export').status_code, 200)
@@ -481,7 +551,7 @@ class TestPages(AccountsCase):
         self.assertEqual(full['files'][0]['result'], 'loaded')
         self.assertIn('took the place', full['files'][0]['message'])
         got = self.lines(store)
-        self.assertEqual(len(got), 7)
+        self.assertEqual(len(got), 9)
         self.assertEqual((got[2]['status'], got[2]['note']),
                          ('review', 'counted the pallet twice'))
         self.assertEqual(db.one('SELECT count(*) AS n FROM sc_invoices '
@@ -490,7 +560,7 @@ class TestPages(AccountsCase):
         # a complete invoice is never replaced
         back = self.send(cal, ('part.pdf', pdf(CUT_OFF))).get_json()
         self.assertEqual(back['files'][0]['result'], 'already')
-        self.assertEqual(len(self.lines(store)), 7)
+        self.assertEqual(len(self.lines(store)), 9)
 
     def test_one_store_never_sees_or_changes_another_stores_lines(self):
         from accounts import db

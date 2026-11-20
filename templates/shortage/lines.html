@@ -63,10 +63,15 @@
             </h2>
             <p class="note" style="margin-bottom:0;">
                 {{ invoice.title }}{% if invoice.invoice_date %}, {{ invoice.invoice_date.strftime('%B %d, %Y') }}{% endif %}.
-                {% if invoice.complete %}The lines add up to the invoice total, {{ invoice.lines_total|money }}.
+                {% if invoice.complete %}The lines and charges add up to the invoice total, {{ invoice.lines_total|money }}.
                 {% elif invoice.net_total is none %}This copy has no SUMMARY page, so lines are missing. Load the complete PDF and it takes this copy's place; statuses and notes are kept.
-                {% else %}The lines read add up to {{ invoice.lines_total|money }}. The invoice says {{ invoice.net_total|money }}.{% endif %}
+                {% else %}The lines and charges read add up to {{ invoice.lines_total|money }}. The invoice says {{ invoice.net_total|money }}.{% endif %}
             </p>
+            {% if invoice.charges %}
+            <p class="note" style="margin:8px 0 0;">Charges on this invoice that are not parts:
+                {% for code, c in invoice.charges|dictsort %}{{ c[0]|capitalize }} {{ c[1]|money }}{{ '; ' if not loop.last else '.' }}{% endfor %}
+            </p>
+            {% endif %}
             {% else %}
             <h2>Open shortages, all invoices</h2>
             <p class="note" style="margin-bottom:0;">Every short line that is not paid, denied or found, from the invoices not marked done.</p>
@@ -173,7 +178,7 @@
     var ONE_INVOICE = {{ 'true' if invoice else 'false' }};
     var STATUS = [['', '—'], ['review', 'Review'], ['filed', 'Filed'], ['paid', 'Paid'], ['denied', 'Denied'], ['found', 'Found']];
     var RESULT = { short: ['Short', 'red'], partial: ['Partial', 'amber'], received: ['Received', 'green'],
-                   core: ['Core charge', 'blue'], ignored: ['Ignored part', 'blue'], none: ['Not counted', 'blue'] };
+                   core: ['Core charge', 'blue'], ignored: ['Ignored part', 'blue'], none: ['No charge', 'blue'] };
     var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     var f = { res: { short: true, partial: true, received: false, other: false }, status: 'any', due: 'any', recent: 0, sort: 'deadline', q: '' };
     var page = 0, size = 50, picked = {}, shown = [];
@@ -304,6 +309,7 @@
         if (!why && r.st === 'short') why = 'No receipt found for this part on this order or shipper.';
         if (r.st === 'core') why = 'Core charge. It is billed with the part and is not a part to receive.';
         if (r.st === 'ignored') why = 'On the ignored parts list.';
+        if (r.st === 'none') why = 'Billed at $0.00. There is nothing to claim.';
         td.appendChild(document.createTextNode(why));
         if (r.det) td.appendChild(el('small', '', r.det));
         tr.appendChild(td);
