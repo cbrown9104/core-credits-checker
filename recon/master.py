@@ -13,7 +13,7 @@ import re
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.styles.differential import DifferentialStyle
 
 from .common import clean_key
@@ -33,12 +33,25 @@ _HEADER_KEYS = {
     'creditamount': 'amount', 'amount': 'amount',
     'creditrequested': 'requested',
 }
-WIDTHS = {'A': 14, 'B': 22, 'C': 14, 'D': 14, 'E': 10, 'F': 14, 'G': 11,
+WIDTHS = {'A': 14, 'B': 22, 'C': 14, 'D': 13, 'E': 10, 'F': 14, 'G': 11,
           'H': 18, 'I': 8, 'J': 12}
 HEADER_FONT = Font(name='Cambria', size=11, bold=True, color='FFFFFFFF')
 HEADER_FILL = PatternFill('solid', fgColor='FF1F4E78')
 DATA_FONT = Font(name='Arial', size=10)
 CENTER = Alignment(horizontal='center', vertical='center')
+LEFT = Alignment(horizontal='left', vertical='center')
+RIGHT = Alignment(horizontal='right', vertical='center')
+# Cell look of the master (the Cowork workbook's): thin gray grid, Arial
+# 10, A/B left, C/D/E centre, F right, G/H centre.
+_GRAY = Side(style='thin', color='FFB7B7B7')
+_NAVY_MED = Side(style='medium', color='FF1F4E78')
+GRID = Border(left=_GRAY, right=_GRAY, top=_GRAY, bottom=_GRAY)
+HEADER_GRID = Border(left=_GRAY, right=_GRAY, top=_NAVY_MED,
+                     bottom=_NAVY_MED)
+COL_ALIGN = [LEFT, LEFT, CENTER, CENTER, CENTER, RIGHT, CENTER, CENTER]
+UNPAID_FILL = PatternFill('solid', fgColor='FFFFE699')    # no credit memo
+WHITE_FILL = PatternFill('solid', fgColor='FFFFFFFF')     # credited rows:
+BAND_FILL = PatternFill('solid', fgColor='FFF2F2F2')      # odd rows gray
 OVERDUE_DXF = DifferentialStyle(
     font=Font(name='Arial', size=10, bold=True, color='FF9C0006'),
     fill=PatternFill('solid', fgColor='FFF8B7B7', bgColor='FFF8B7B7'))
@@ -158,27 +171,38 @@ def sort_rows(rows):
     return [r for _, r in indexed]
 
 
-def _write_sheet(ws, rows):
+def _write_sheet(ws, rows, fills=True):
+    """fills=True is the "Core Returns" look: rows with no credit memo
+    yellow, credited rows banded white / gray (odd rows gray).
+    fills=False is the plain "Unpaid Cores" look: grid only."""
     for col, title in enumerate(HEADERS, start=1):
         c = ws.cell(row=1, column=col, value=title)
         c.font = HEADER_FONT
         c.fill = HEADER_FILL
         c.alignment = CENTER
+        c.border = HEADER_GRID
     ws['I1'] = 'As of:'
     ws['I1'].font = Font(name='Cambria', size=11, bold=True)
     ws['J1'] = '=TODAY()'
     ws['J1'].number_format = 'yyyy\\-mm\\-dd'
-    ws.row_dimensions[1].height = 21.75
+    ws.row_dimensions[1].height = 22
     for r, row in enumerate(rows, start=2):
         vals = [row.get('memo'), row.get('shipment'), row.get('ticket'),
                 row.get('part'), row.get('claim'), row.get('amount'),
                 f'=IF(B{r}="","",IFERROR($J$1-DATEVALUE(LEFT(B{r},10)),""))',
                 row.get('requested')]
+        fill = None
+        if fills:
+            fill = UNPAID_FILL if not row.get('memo') else (
+                BAND_FILL if r % 2 else WHITE_FILL)
         for col, v in enumerate(vals, start=1):
             c = ws.cell(row=r, column=col, value=v)
             c.font = DATA_FONT
+            c.border = GRID
+            c.alignment = COL_ALIGN[col - 1]
+            if fill is not None:
+                c.fill = fill
         ws.cell(row=r, column=6).number_format = '"$"#,##0.00'
-        ws.cell(row=r, column=7).number_format = '0'
     last = max(2, len(rows) + 1)
     for col, w in WIDTHS.items():
         ws.column_dimensions[col].width = w
@@ -197,7 +221,7 @@ def write_master(rows, path):
     ws.title = 'Core Returns'
     _write_sheet(ws, rows)
     _write_sheet(wb.create_sheet('Unpaid Cores'),
-                 [r for r in rows if not r.get('memo')])
+                 [r for r in rows if not r.get('memo')], fills=False)
     wb.save(path)
     return rows
 

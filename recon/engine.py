@@ -23,6 +23,7 @@ import zipfile
 from . import dealerconnect as DC
 from . import master as M
 from . import memo as MEMO
+from . import ocr as OCR
 from . import outputs as OUT
 from . import shipper as SH
 from .common import (clean_key, hamming1, is_valid_ticket, money_out,
@@ -90,6 +91,13 @@ class PartCorrector:
         return part, False
 
 
+# Characters OCR takes for one another on these pages (both directions).
+_LOOKALIKE = set()
+for _a, _b in ('S5', 'I1', 'L1', 'O0', 'D0', 'Q0', 'B8', 'Z2', 'T7', 'G6',
+               'YU', 'VU', 'RA', 'RE', 'KE', 'KA', 'FP', 'HN', 'CG', 'EF'):
+    _LOOKALIKE.update((_a + _b, _b + _a))
+
+
 def _num(v):
     try:
         return float(v)
@@ -153,7 +161,7 @@ class Reconciler:
             'data_fixes': [], 'paid_per_mopar': [], 'comparison': [],
             'comparison_summary': [], 'unpaid': [], 'aging': [],
             'credit_request': [], 'prev_requested': [], 'rescan': [],
-            'files': [], 'pages_scanned': 0,
+            'files': [], 'pages_scanned': 0, 'page_checks': [],
         }
         self.page_refs = collections.defaultdict(list)
         self.dc = {}
@@ -167,6 +175,8 @@ class Reconciler:
         self.read_tickets = set()
         self.credit_tickets = set()
         self.parts = PartCorrector([])
+        self._memos = None          # credit memos, read before the scans
+        self.dealer_entered = self.dealer
 
     # ── step 1 ──────────────────────────────────────────────────────────
     def load_master(self, path, name):
@@ -221,8 +231,437 @@ class Reconciler:
         self.parts = PartCorrector(
             [clean_key(r.get('part')) for r in self.ledger.rows] +
             [d['part'] for d in self.dc.values() if d.get('part')])
+        self._verify_pages()
         self._resolve_lines()
         self._apply_scans()
+        self._report_page_checks()
+
+    # ── step 2a: each page against its printed TOTAL ────────────────────
+    def _known_ticket(self, ticket):
+        k = clean_key(ticket)
+        return bool(self.ledger.find(k)) or k in self.credit_tickets or \
+            k in self.dc
+
+    def _verify_pages(self):
+        """Check every page's rows against its printed "TOTAL <count>
+        <amount>", and read again the pages that need it: every page with
+        a ticket that is not on the master yet, and every page that does
+        not add up on the first read. The reads are compared row by row;
+        see _merge_reads."""
+        todo = [p for p in self.pages if p['lines']]
+        for i, p in enumerate(todo, start=1):
+            self.progress('ocr', f'Checking page totals: page {i} of '
+                                 f'{len(todo)}')
+            try:
+                self._verify_page(p)
+            except Exception:       # the check must never stop a run
+                import traceback
+                traceback.print_exc()
+                p['check'] = self._page_check(p, self._candidates(p))
+
+    def _candidates(self, p, reads=(), crops=((), ())):
+        """Everything the page's TOTAL was read as."""
+        c = {'full': collections.Counter(), 'direct': set(), 'loose': set(),
+             'counts': collections.Counter(),
+             'counts_full': collections.Counter()}
+        texts = list(p.get('total_texts') or [])
+        for rd in reads:
+            texts.extend(rd.get('total_texts') or [])
+        for text in texts:
+            direct, _ = SH.total_amounts(text)
+            if direct:
+                c['full'][round(direct[-1], 2)] += 1
+                c['direct'].add(round(direct[-1], 2))
+            for n in SH.total_counts(text):
+                c['counts'][n] += 1
+                c['counts_full'][n] += 1
+        for text in crops[0]:
+            direct, loose = SH.total_amounts(text)
+            c['direct'].update(round(v, 2) for v in direct)
+            c['loose'].update(round(v, 2) for v in loose)
+        for text in crops[1]:
+            for n in SH.total_counts(text):
+                c['counts'][n] += 1
+        return c
+
+    @staticmethod
+    def _ties(total, n, cand):
+        """Does this row total match a reading of the printed TOTAL? A
+        reading with a stray digit dropped only counts when the printed
+        line count agrees as well."""
+        total = round(total, 2)
+        return total in cand['direct'] or (
+            total in cand['loose'] and n in cand['counts'])
+
+    def _page_check(self, p, cand, new=False):
+        lines = p['lines']
+        n = len(lines)
+        complete = all(ln.get('amount') is not None for ln in lines)
+        total = round(sum(ln.get('amount') or 0 for ln in lines), 2)
+        amount_ok = complete and self._ties(total, n, cand)
+        if not amount_ok and complete:
+            # rows already on the master: its amounts are the checked ones
+            alt = 0.0
+            for ln in lines:
+                rows = self.ledger.find(ln['ticket'])
+                a = _num(rows[0].get('amount')) if rows else None
+                alt += a if a is not None else (ln.get('amount') or 0)
+            if self._ties(alt, n, cand):
+                amount_ok, total = True, round(alt, 2)
+        full = cand['full'].most_common()
+        # a TOTAL amount two full reads of the line agree on
+        printed_amt = full[0][0] if full and full[0][1] >= 2 else None
+        if printed_amt is not None and printed_amt < total and \
+                f'{total:.2f}'.endswith(f'{printed_amt:.2f}'):
+            # 995.00 against rows adding to 1,995.00: the pen circle
+            # around the count has hidden the front of the number. That
+            # is a TOTAL that could not be read, not a page that is off.
+            printed_amt = None
+        # The count is usually circled by hand, so a close-up of it can
+        # read the same wrong digit every time. A close-up may confirm
+        # the count; only two full reads of the line agreeing can say it
+        # is different.
+        counts = cand['counts_full'].most_common()
+        count_ok = n in cand['counts']
+        printed_cnt = n if count_ok else (
+            counts[0][0] if counts and counts[0][1] >= 2 else None)
+        count_bad = printed_cnt is not None and printed_cnt != n
+        if amount_ok and not count_bad:
+            status, note = 'ok', ''
+            printed_amt = total
+        elif count_bad or (printed_amt is not None and
+                           abs(printed_amt - total) > 0.005):
+            status = 'mismatch'
+            bits = []
+            if count_bad:
+                bits.append(f'the page TOTAL shows {printed_cnt} lines, '
+                            f'{n} were read')
+            if printed_amt is not None and abs(printed_amt - total) > 0.005:
+                bits.append(f'the page TOTAL shows ${printed_amt:,.2f}, the '
+                            f'lines read add up to ${total:,.2f}')
+            if not complete:
+                bits.append('an amount on the page could not be read')
+            note = '; '.join(bits)
+            note = note[:1].upper() + note[1:] + '.'
+            if (count_bad and printed_cnt > n) or (
+                    printed_amt is not None and printed_amt > total):
+                note += (' A line the scan missed, or a line crossed out '
+                         'by hand (not picked up), would explain it.')
+            if amount_ok:
+                printed_amt = total
+        else:
+            status = 'unread'
+            seen = sorted(cand['direct'])
+            note = 'The printed TOTAL could not be read well enough to ' \
+                   'check this page' + (
+                       ' (read as ' + ' / '.join(f'${v:,.2f}' for v in
+                                                 seen[:4]) + ')'
+                       if seen else '') + '.'
+            if count_ok:
+                note += f' The line count ({n}) matches.'
+            if not complete:
+                note += ' An amount on the page could not be read.'
+        return {'file': p['file'], 'page': p['page'],
+                'shipment': p.get('shipment_id'), 'lines': n,
+                'amount': total, 'printed_count': printed_cnt,
+                'printed_amount': printed_amt, 'status': status,
+                'note': note, 'new': new, 'changes': p.get('changes', [])}
+
+    def _verify_page(self, p):
+        new = any(not self.ledger.find(ln['ticket']) for ln in p['lines'])
+        cand = self._candidates(p)
+        check = self._page_check(p, cand, new)
+        if check['status'] == 'ok' and not new:
+            p['check'] = check
+            return
+        im = OCR.page_image(p['path'], p['page'], p.get('dpi') or
+                            OCR.OCR_DPI)
+        crops = SH.total_crops(im, p)
+        cand = self._candidates(p, (), crops)
+        check = self._page_check(p, cand, new)
+        if check['status'] != 'ok' or new:
+            reads = SH.reread_rows(im, p)
+            cand = self._candidates(p, reads, crops)
+            self._merge_reads(p, reads, cand)
+            new = any(not self.ledger.find(ln['ticket'])
+                      for ln in p['lines'])
+            check = self._page_check(p, cand, new)
+        p['check'] = check
+
+    @staticmethod
+    def _yc(row):
+        b = row['line_box']
+        return (b[1] + b[3]) / 2.0
+
+    def _vote_part(self, ln, reads):
+        """Settle a row's part number from its reads: a part this store
+        has returned before wins; otherwise what most reads agree on.
+        Reads that disagree, with nothing on record to settle it, are
+        flagged for a look at the page."""
+        raw = [r['part'] for r in reads if r.get('part')]
+        if not raw:
+            return
+        first = ln.get('part') or ''
+        known = [k for k in (self.parts.fix(x)[0] for x in raw)
+                 if k in self.parts.count]
+        seen = list(dict.fromkeys(raw))
+        flag = None
+        if known:
+            top = collections.Counter(known).most_common()
+            pick = top[0][0]
+            if len(top) > 1:
+                flag = ('part # read as ' + ' / '.join(seen) + ' — more '
+                        'than one part on record fits, check the page')
+            elif pick != first:
+                flag = (f'part read as {first}, matched to {pick} (a part '
+                        f'already on record)')
+            if len(raw) >= 3 and len(set(raw)) == 1 and \
+                    part_looks_valid(raw[0]) and raw[0] != pick and \
+                    len(raw[0]) == len(pick) and not any(
+                        a + b in _LOOKALIKE for a, b in zip(raw[0], pick)
+                        if a != b):
+                # Every read shows the same part, and where it differs
+                # from the part on record the characters do not look
+                # alike (53010749AA against 53010748AA). Three reads do
+                # not all mistake a 9 for an 8: it is a different part,
+                # not a misread.
+                flag = (f'part read as {raw[0]} on every read; {pick} is '
+                        f'the nearest part on record — kept as read, '
+                        f'check the page')
+                pick = raw[0]
+        else:
+            valid = [x for x in raw if part_looks_valid(x)]
+            top = collections.Counter(valid).most_common()
+            if top and top[0][1] >= 2 and (len(top) == 1 or
+                                           top[0][1] > top[1][1]):
+                pick = top[0][0]
+            else:
+                pick = first if part_looks_valid(first) or not valid \
+                    else valid[0]
+            if len(set(raw)) > 1:
+                flag = ('part # read differently on re-reads (' +
+                        ' / '.join(seen) + ') and is not a part on record '
+                        '— check the page')
+        if pick != first:
+            ln['part'] = pick
+            ln['part_ok'] = part_looks_valid(pick)
+        ln['part_settled'] = True
+        if flag:
+            ln.setdefault('flags', []).append(flag)
+
+    def _merge_reads(self, p, reads, cand):
+        """Compare the first read of a page with its re-reads, row by row
+        (rows are lined up by where they sit on the page).
+
+        - Part numbers: see _vote_part.
+        - Amounts: where the reads differ, the set of amounts that makes
+          the page add up to its printed TOTAL is used; failing that, the
+          amount most reads agree on.
+        - A row the first read missed is added when two reads have it,
+          when its ticket is on the master, DealerCONNECT or this run's
+          credit memos, or when the page only adds up with it.
+        Everything changed here is flagged on the row."""
+        met = SH._row_metrics(p)
+        if not met or not reads:
+            return
+        pitch = met[2]
+        groups = [{'ln': ln, 'y': self._yc(ln), 'reads': [ln]}
+                  for ln in p['lines']]
+        extras = []
+        for rd in reads:
+            for row in rd['rows']:
+                y = self._yc(row)
+                g = min(groups, key=lambda g: abs(g['y'] - y))
+                if abs(g['y'] - y) <= pitch * 0.45:
+                    g['reads'].append(row)
+                    continue
+                e = min(extras, key=lambda e: abs(e['y'] - y), default=None)
+                if e is not None and abs(e['y'] - y) <= pitch * 0.45:
+                    e['reads'].append(row)
+                else:
+                    extras.append({'y': y, 'reads': [row]})
+        for g in groups:
+            self._vote_part(g['ln'], g['reads'])
+            g['opts'] = self._amount_options(g['reads'])
+            alt_claims = [r['claim'] for r in g['reads'][1:] if r.get('claim')]
+            if g['ln'].get('claim') is None and len(alt_claims) >= 2 and \
+                    len(set(alt_claims)) == 1:
+                g['ln']['claim'] = alt_claims[0]
+        # rows only a re-read has
+        maybe = []
+        for e in extras:
+            tickets = collections.Counter(
+                r['ticket'] for r in e['reads'] if is_valid_ticket(r['ticket']))
+            if not tickets:
+                continue
+            t = tickets.most_common(1)[0][0]
+            if any(clean_key(ln['ticket']) == clean_key(t)
+                   for ln in p['lines']):
+                continue
+            row = next(r for r in e['reads'] if r['ticket'] == t)
+            if not self._known_ticket(t) and not any(
+                    r.get('amount') is not None and
+                    part_looks_valid(r.get('part') or '')
+                    for r in e['reads']):
+                continue        # no part and amount with it: not a row
+            self._vote_part(row, e['reads'])
+            e.update(ln=row, opts=self._amount_options(e['reads']),
+                     sure=len(e['reads']) >= 2 or self._known_ticket(t))
+            maybe.append(e)
+        sure = [e for e in maybe if e['sure']]
+        unsure = [e for e in maybe if not e['sure']]
+        picked = self._fit_to_total(groups + sure, unsure, cand)
+        changes = p.setdefault('changes', [])
+        used = groups + sure + [e for e in unsure if e.get('use')]
+        for g in used:
+            ln = g['ln']
+            first = ln.get('amount')
+            amount = g.get('pick', g['opts'][0] if g['opts'] else None)
+            if g not in groups:
+                ln.setdefault('flags', []).append(
+                    'this line was missed on the first read of the page '
+                    'and picked up on a re-read — check the page')
+                ln['added_on_reread'] = True
+                changes.append(f'{ln["ticket"]}: line added from a re-read')
+            if amount is None and g.get('fill') is not None:
+                amount = g['fill']
+                ln.setdefault('flags', []).append(
+                    f'amount unreadable; ${amount:,.2f} is what the page '
+                    f'TOTAL leaves for this line — check the page')
+                changes.append(f'{ln["ticket"]}: amount taken from the page '
+                               f'TOTAL (${amount:,.2f})')
+            elif g in groups and amount is not None and first is not None \
+                    and abs(amount - first) > 0.005:
+                why = 'so the page adds up to its printed TOTAL' \
+                    if picked else 'the amount the re-reads agree on'
+                ln.setdefault('flags', []).append(
+                    f'amount first read as ${first:,.2f}; ${amount:,.2f} '
+                    f'used ({why}) — check the page')
+                changes.append(f'{ln["ticket"]}: amount ${first:,.2f} → '
+                               f'${amount:,.2f}')
+            elif g in groups and len(g['opts']) > 1 and not picked:
+                ln.setdefault('flags', []).append(
+                    'amount read differently on re-reads (' + ' / '.join(
+                        f'${v:,.2f}' for v in g['opts']) + ') — check the '
+                    'page')
+            ln['amount'] = amount
+        if len(used) > len(groups):
+            p['lines'] = [g['ln'] for g in
+                          sorted(used, key=lambda g: g['y'])]
+        for e in unsure:
+            if not e.get('use'):
+                self.r['ocr_review'].append({
+                    'file': p['file'], 'page': p['page'],
+                    'ticket': e['ln']['ticket'],
+                    'issue': f'One re-read of this page shows a line for '
+                             f'{e["ln"]["ticket"]} that the other reads do '
+                             f'not have. It was not added. Check the page.'})
+
+    @staticmethod
+    def _amount_options(reads):
+        """A row's amounts over its reads, most agreed-on first (the first
+        read wins a tie)."""
+        vals = [r['amount'] for r in reads if r.get('amount') is not None]
+        count = collections.Counter(vals)
+        return sorted(count, key=lambda v: (-count[v], vals.index(v)))
+
+    def _fit_to_total(self, rows, optional, cand):
+        """Pick, for each row, the amount that makes the page add up to
+        its printed TOTAL. rows are on the page for certain; optional are
+        rows only one re-read has. Sets g['pick'] (and g['use'] on an
+        optional row, g['fill'] on the one row with no amount at all).
+        Returns True when the page was made to add up; with no way, or
+        more than one way, nothing is forced and each row keeps the
+        amount most reads agree on."""
+        def total(choice, extra):
+            vals = [g['opts'][i] for g, i in zip(rows, choice) if g['opts']]
+            vals += [e['opts'][0] for e in extra if e['opts']]
+            return round(sum(vals), 2)
+
+        blanks = [g for g in rows if not g['opts']]
+        base = [0] * len(rows)
+        if not blanks and self._ties(total(base, ()), len(rows), cand):
+            return True
+        # the fewest changes from the agreed amounts that tie: swap one
+        # row's amount, add one optional row, or both
+        swaps = [(i, j) for i, g in enumerate(rows)
+                 for j in range(1, len(g['opts']))]
+        tries = []
+        if not blanks:
+            for i, j in swaps:
+                tries.append(([(i, j)], ()))
+            for e in optional:
+                if e['opts']:
+                    tries.append(([], (e,)))
+            for a in range(len(swaps)):
+                for b in range(a + 1, len(swaps)):
+                    if swaps[a][0] != swaps[b][0] and len(tries) < 4000:
+                        tries.append(([swaps[a], swaps[b]], ()))
+            for i, j in swaps:
+                for e in optional:
+                    if e['opts']:
+                        tries.append(([(i, j)], (e,)))
+        hits = []
+        for level in (1, 2):
+            for sw, extra in tries:
+                if len(sw) + len(extra) != level:
+                    continue
+                choice = list(base)
+                for i, j in sw:
+                    choice[i] = j
+                if self._ties(total(choice, extra), len(rows) + len(extra),
+                              cand):
+                    hits.append((choice, extra))
+            if hits:
+                break
+        if len(hits) == 1:
+            choice, extra = hits[0]
+            for g, i in zip(rows, choice):
+                g['pick'] = g['opts'][i]
+            for e in extra:
+                e['use'] = True
+            return True
+        if len(blanks) == 1 and not hits:
+            # one row with no readable amount: the printed TOTAL, when two
+            # full reads of that line agree on it, says what is left
+            full = cand['full'].most_common(1)
+            if full and full[0][1] >= 2:
+                left = round(full[0][0] - total(base, ()), 2)
+                if left > 0:
+                    blanks[0]['fill'] = left
+                    return True
+        return False
+
+    def _report_page_checks(self):
+        """Put each page's TOTAL check in the results, and say so up top
+        for pages that added tickets this run and do not check out."""
+        checks = [p['check'] for p in self.pages if p.get('check')]
+        self.r['page_checks'] = checks
+        bad = [c for c in checks if c['status'] == 'mismatch']
+        for c in bad:
+            self.r['ocr_review'].append({
+                'file': c['file'], 'page': c['page'], 'ticket': '',
+                'issue': 'Page does not match its printed TOTAL. ' +
+                         c['note'] + ' Check the page against the master.'})
+        loud = [c for c in bad if c['new']]
+        if loud:
+            self.r['warnings'].append(
+                f'{len(loud)} shipper page(s) that added tickets do not '
+                f'match their printed TOTAL: ' + '; '.join(
+                    f'{c["file"]} p.{c["page"]} ({c["note"].rstrip(".")})'
+                    for c in loud[:6]) +
+                ('; ...' if len(loud) > 6 else '') +
+                '. Check those pages against the master before sending '
+                'the credit request.')
+        unread = [c for c in checks if c['status'] == 'unread' and c['new']]
+        if unread:
+            self.r['warnings'].append(
+                f'{len(unread)} shipper page(s) that added tickets could '
+                f'not be checked against their printed TOTAL (it could not '
+                f'be read): ' + ', '.join(
+                    f'{c["file"]} p.{c["page"]}' for c in unread[:8]) +
+                ('...' if len(unread) > 8 else '') +
+                '. They are listed on the Page Totals sheet of the report.')
 
     def _evidence(self, ln, part, amount):
         """How a scanned line compares with what is on record for a
@@ -456,7 +895,9 @@ class Reconciler:
                     continue
                 flags = []
                 part = (d or {}).get('part')
-                if not part:
+                if not part and ln.get('part_settled'):
+                    part = ln['part']       # settled over several reads
+                elif not part:
                     part, fixed = self.parts.fix(ln['part'])
                     if fixed:
                         flags.append(f'part read as {ln["part"]}, matched '
@@ -470,6 +911,8 @@ class Reconciler:
                         flags.append('part # unclear — check the page')
                     if ln['amount'] is None:
                         flags.append('amount unreadable — check the page')
+                flags.extend(f for f in ln.get('flags', [])
+                             if f not in flags)
                 if p.get('shipment_source') == 'scan' and p['shipment_id'] \
                         and p['shipment_id'] != sid:
                     flags.append(f'SHP# read as {p["shipment_id"]}, '
@@ -510,7 +953,10 @@ class Reconciler:
                                          'where': where})
 
     # ── step 3 ──────────────────────────────────────────────────────────
-    def apply_memos(self, files):
+    def read_memos(self, files):
+        """Read the credit memos (nothing is applied yet). Done before
+        the shipper scans so the scan step knows which tickets this run's
+        memos credit."""
         names = []
         parsed = []
         for path, name in files:
@@ -531,6 +977,14 @@ class Reconciler:
         self.credit_tickets = {clean_key(c['ticket'])
                                for _, res in parsed
                                for c in res['credits'] if c['ticket']}
+        self._memos = (names, parsed)
+
+    def apply_memos(self, files=None):
+        if self._memos is None:
+            self.read_memos(files or [])
+        names, parsed = self._memos
+        self.memo_dealers = [res['dealer'] for _, res in parsed
+                             if res.get('dealer')]
         for name, res in parsed:
             if res.get('dealer') and not self.dealer:
                 self.dealer = res['dealer']
@@ -550,6 +1004,128 @@ class Reconciler:
                 else:
                     self.r['other_credits'].append(c)
         self.r['inputs']['memos'] = names
+        self._place_memo_only()
+
+    @staticmethod
+    def _series(ticket):
+        """('CB', 846220) for CB00846220; ('C', 456393855) for a GCRS
+        ticket; None for anything else."""
+        m = re.match(r'^(C[ABW]?)(\d+)$', clean_key(ticket))
+        return (m.group(1), int(m.group(2))) if m else None
+
+    def _place_memo_only(self):
+        """A credit for a ticket that is not on the master is added with
+        no Shipment ID. When an uploaded shipper page is short (by its
+        printed TOTAL) and holds tickets in the same number range, that
+        page is very likely where the scan dropped the ticket: say so,
+        and fill the Shipment ID when the page is short by exactly this
+        credit."""
+        pages = [p for p in getattr(self, 'pages', [])
+                 if p.get('check') and p.get('shipment') and p['lines']]
+        if not pages:
+            return
+        loose = []
+        for u in self.r['unmatched_credits']:
+            ser = self._series(u['ticket'])
+            rows = self.ledger.find(u['ticket'])
+            if not ser or not rows or rows[0].get('shipment'):
+                continue
+            hits = []
+            for p in pages:
+                c = p['check']
+                if c['status'] == 'ok':
+                    continue
+                nums = [self._series(ln['ticket']) for ln in p['lines']]
+                nums = [n[1] for n in nums if n and n[0] == ser[0]]
+                if not nums:
+                    continue
+                reach = max(500, max(nums) - min(nums))
+                if not min(nums) - reach <= ser[1] <= max(nums) + reach:
+                    continue
+                short_n = c['printed_count'] - c['lines'] \
+                    if c['printed_count'] is not None else None
+                short_amt = round(c['printed_amount'] - c['amount'], 2) \
+                    if c['printed_amount'] is not None else None
+                if (short_n is not None and short_n < 1) or \
+                        (short_amt is not None and short_amt <= 0):
+                    continue
+                exact = short_n == 1 and _same_amount(short_amt,
+                                                      u['amount'])
+                hits.append((p, c, exact))
+            if not hits:
+                continue
+            exact = [h for h in hits if h[2]]
+            if len(exact) == 1:
+                p, c, _ = exact[0]
+                rows[0]['shipment'] = p['shipment']
+                u['shipment'] = p['shipment']
+                issue = (f'Credit memo {u["memo"]} paid {u["ticket"]}, '
+                         f'which was not on the master. This page is one '
+                         f'line and ${_num(u["amount"]) or 0:,.2f} short of '
+                         f'its printed TOTAL and holds tickets in the same '
+                         f'number range, so the ticket was given this '
+                         f'page\'s Shipment ID ({p["shipment"]}). Check '
+                         f'the page.')
+                self.r['data_fixes'].append({
+                    'ticket': u['ticket'], 'field': 'Shipment ID',
+                    'old': None, 'new': p['shipment'],
+                    'source': f'{p["file"]} p.{p["page"]} (short of its '
+                              f'printed TOTAL by this ticket)'})
+            else:
+                p, c, _ = hits[0]
+                where = ', '.join(f'{q["file"]} p.{q["page"]} (shipment '
+                                  f'{q["shipment"]})' for q, _, _ in hits[:3])
+                issue = (f'Credit memo {u["memo"]} paid {u["ticket"]}, '
+                         f'which was not on the master, so it has no '
+                         f'Shipment ID. It may have been dropped from a '
+                         f'scan: {where} did not check out against the '
+                         f'printed TOTAL and holds tickets in the same '
+                         f'number range. If the ticket is on that page, '
+                         f'put its Shipment ID on the master.')
+                loose.append(f'{u["ticket"]} ({p["file"]} p.{p["page"]})')
+            self.r['ocr_review'].append({
+                'file': p['file'], 'page': p['page'], 'ticket': u['ticket'],
+                'issue': issue})
+        if loose:
+            self.r['warnings'].append(
+                f'{len(loose)} credited ticket(s) were not on the master '
+                f'and have no Shipment ID. Each may have been dropped from '
+                f'a scan: a page in the same number range did not check '
+                f'out against its printed TOTAL. ' + ', '.join(loose[:8]) +
+                ('...' if len(loose) > 8 else '') + '. If the ticket is on '
+                'that page, put the page\'s Shipment ID on the master '
+                '(details under Scan review).')
+
+    def check_dealer(self):
+        """The dealer code is printed on every shipper page (DEALER:
+        45558000) and on the memos. When the code entered for the run (the
+        store's saved code) is not the one the documents print, the
+        documents win and the difference is reported."""
+        seen = collections.Counter(
+            p['dealer'] for p in getattr(self, 'pages', [])
+            if p.get('dealer'))
+        for d in getattr(self, 'memo_dealers', []):
+            seen[str(d)] += 1
+        self.r['dealer_entered'] = self.dealer_entered or ''
+        if not seen:
+            return
+        top = seen.most_common(2)
+        code, n = top[0]
+        clear = n >= 2 and (len(top) == 1 or n >= 3 * top[1][1])
+        self.r['dealer_on_documents'] = code if clear else ''
+        if not self.dealer_entered:
+            if clear:
+                self.dealer = code
+            return
+        if clear and code != self.dealer_entered:
+            self.dealer = code
+            self.r['warnings'].insert(0, (
+                f'Dealer code: this store is set up as '
+                f'{self.dealer_entered}, but the documents in this run '
+                f'print {code} ({n} of {sum(seen.values())} pages and '
+                f'memos read). {code} was used on the credit request. '
+                f'Have the site owner correct the store\'s dealer code '
+                f'(Users page, Store details).'))
 
     def _apply_credit(self, c, from_ocr):
         t = clean_key(c['ticket'])
@@ -1022,6 +1598,12 @@ class Reconciler:
             ['Marked paid from DealerCONNECT (count)',
              len(r['paid_per_mopar'])],
             ['Data fixes (count)', len(r['data_fixes'])],
+            ['Shipper pages checked against their printed TOTAL (count)',
+             len(r['page_checks'])],
+            ['  Pages that match / do not match / TOTAL not read',
+             ' / '.join(str(sum(1 for c in r['page_checks']
+                                if c['status'] == k))
+                        for k in ('ok', 'mismatch', 'unread'))],
             ['', ''],
             ['UNPAID AFTER THIS RUN', ''],
             ['Unpaid tickets (count)', len(r['unpaid'])],
@@ -1109,6 +1691,23 @@ class Reconciler:
                 'Scan File', 'Page', 'Control Ticket', 'Issue'],
                 [[x['file'], x['page'], x['ticket'], x['issue']]
                  for x in r['ocr_review']], [36, 6, 14, 90], ()))
+        if r['page_checks']:
+            label = {'ok': 'Matches', 'mismatch': 'DOES NOT MATCH',
+                     'unread': 'TOTAL not read'}
+            sheets.append(('Page Totals', [
+                'Scan File', 'Page', 'Shipment ID', 'Lines Read',
+                'Amount Read', 'Printed Count', 'Printed Amount', 'Result',
+                'Added Tickets', 'Note'],
+                [[c['file'], c['page'], c['shipment'], c['lines'],
+                  c['amount'], c['printed_count'], c['printed_amount'],
+                  label[c['status']], 'Yes' if c['new'] else '',
+                  ' '.join([c['note']] + (['Changed on re-read: ' +
+                                           '; '.join(c['changes']) + '.']
+                                          if c['changes'] else [])).strip()]
+                 for c in sorted(r['page_checks'], key=lambda c: (
+                     {'mismatch': 0, 'unread': 1, 'ok': 2}[c['status']],
+                     str(c['shipment'] or ''), c['file'], c['page']))],
+                [36, 6, 22, 11, 13, 13, 14, 16, 13, 90], (4, 6)))
         if r['data_fixes'] or r['scan_fills']:
             rows = [[x['ticket'], x['field'], x['old'], x['new'],
                      x['source']] for x in r['data_fixes']]
@@ -1145,15 +1744,18 @@ def run(inputs, opts, out_dir, progress=None):
              else 'Starting a new master')
     rec.load_master(*(inputs.get('master') or (None, None)))
     rec.load_dc(inputs.get('dc', []), inputs.get('dc_text', ''))
+    if inputs.get('memos'):
+        rec.read_memos(inputs['memos'])
     if inputs.get('shippers'):
         rec.read_shippers(inputs['shippers'])
     else:
         rec.pages = []
         rec.r['inputs']['shippers'] = []
     if inputs.get('memos'):
-        rec.apply_memos(inputs['memos'])
+        rec.apply_memos()
     else:
         rec.r['inputs']['memos'] = []
+    rec.check_dealer()
     progress('dc', 'Comparing with DealerCONNECT')
     rec.apply_dc()
     progress('request', 'Aging unpaid cores and building the credit request')

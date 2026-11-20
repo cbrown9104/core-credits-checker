@@ -166,3 +166,40 @@ def ocr_text(path, dpi=OCR_DPI, progress=None, label=''):
         out.extend(ln['text'] for ln in page['lines'])
         out.append('\f')
     return '\n'.join(out)
+
+
+# ── single pages and crops (the page TOTAL check and its re-reads) ──────
+def page_image(path, page, dpi=OCR_DPI):
+    """One page of a PDF as a grayscale PIL image, or None."""
+    from PIL import Image
+    td = tempfile.mkdtemp(prefix='ocrp_')
+    try:
+        imgs = _render(path, page, page, dpi, td)
+        if not imgs:
+            return None
+        with Image.open(imgs[0]) as im:
+            return im.convert('L')
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def ocr_image(im, psm=6, whitelist=None, dpi=OCR_DPI):
+    """OCR a PIL image. Returns its lines (same shape as ocr_pdf's), with
+    word boxes in the image's own pixels."""
+    td = tempfile.mkdtemp(prefix='ocri_')
+    try:
+        path = os.path.join(td, 'i.png')
+        im.save(path)
+        cmd = ['tesseract', path, 'stdout', '--psm', str(psm)]
+        if whitelist:
+            cmd += ['-c', f'tessedit_char_whitelist={whitelist}']
+        r = subprocess.run(cmd + ['tsv'], capture_output=True, text=True,
+                           env=_tess_env(), timeout=120)
+        pages = _parse_tsv(r.stdout or '', [1], dpi)
+        return pages[0]['lines'] if pages else []
+    except Exception:
+        return []
+    finally:
+        shutil.rmtree(td, ignore_errors=True)

@@ -342,7 +342,7 @@
         </div>
 
         <div class="checks">
-            <label><input type="checkbox" id="markRequested" checked> Write today's date in "Credit Requested" for every ticket on the credit request (so next week's request doesn't repeat them)</label>
+            <label><input type="checkbox" id="markRequested"> Write today's date in "Credit Requested" for every ticket on the credit request. Check this only once the request email has gone to Mopar (so next week's request doesn't repeat them)</label>
             <label><input type="checkbox" id="applyDc" checked> Let DealerCONNECT correct part #, amount and claim on unpaid tickets, and mark tickets it shows paid</label>
             <label><input type="checkbox" id="includePrev"> Put tickets already requested before back on this credit request</label>
         </div>
@@ -687,6 +687,19 @@
             h += section('Scan review', r.ocr_review.length,
                 table([['Scan file'], ['Page', 'num'], ['Ticket', 'mono'], ['Issue']],
                     r.ocr_review.map(x => [x.file, x.page, x.ticket, x.issue])));
+        }
+        if (r.page_checks && r.page_checks.length) {
+            const off = r.page_checks.filter(c => c.status !== 'ok');
+            const okN = r.page_checks.length - off.length;
+            const pill = { mismatch: '<span class="pill red">Does not match</span>', unread: '<span class="pill amber">TOTAL not read</span>' };
+            h += section('Shipper pages against their printed TOTAL', null,
+                (off.length ? table([['Scan file'], ['Page', 'num'], ['Shipment ID', 'nowrap'], ['Lines read', 'num'], ['Amount read', 'num'], ['Printed TOTAL', 'num'], ['Result', 'nowrap'], ['Note']],
+                    off.map(c => [c.file, c.page, c.shipment, c.lines, money(c.amount),
+                        (c.printed_count === null ? '' : c.printed_count + ' / ') + (c.printed_amount === null ? '?' : money(c.printed_amount)),
+                        { html: pill[c.status] + (c.new ? ' <span class="pill blue">Added tickets</span>' : '') }, c.note])) : ''),
+                okN + ' of ' + r.page_checks.length + ' pages match their printed TOTAL (line count and amount).' +
+                (off.length ? ' The pages below do not, or their TOTAL could not be read (a count circled by hand often hides it). Check them against the master.' : '') +
+                ' Every page is listed on the Page Totals sheet of Core_Recon_Report.');
         }
         if (r.comparison_summary && r.comparison_summary.length) {
             h += section('Master vs. DealerCONNECT', null,
