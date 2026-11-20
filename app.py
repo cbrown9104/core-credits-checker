@@ -33,12 +33,16 @@ from recon import engine as recon_engine
 from recon import jobs as recon_jobs
 from recon.master import MasterError
 from recon.shipper import _shipment_from_header, read_shipper_pdf
+from shortage import web as shortage_web
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB max upload
 # Store accounts (sign-in, saved master, run history). Inert unless
 # DATABASE_URL is set; without it the app runs open, as it always has.
 accounts.init_app(app)
+# Shortage Check keeps its work in the database: it is there when
+# accounts are on, and answers 404 when they are off.
+app.register_blueprint(shortage_web.bp)
 
 # Cap OCR pages so a huge scan can't run until OOM/timeout (Starter-safe default)
 MAX_OCR_PAGES = 20

@@ -1,0 +1,412 @@
+{% extends 'account/base.html' %}
+{% block title %}{{ invoice.number if invoice else 'Open shortages' }} — Shortage Check{% endblock %}
+{% block container_class %} wide{% endblock %}
+{% block head %}
+<style>
+    .container.wide { max-width: 1500px; }
+    .top { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+    .top h2 { margin-bottom: 4px; }
+    .top .acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .top .acts form { display: inline; }
+    .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 16px; }
+    .filters select, .filters input[type="text"] { width: auto; padding: 8px 10px; font-size: 13px; }
+    .filters input[type="text"] { min-width: 230px; }
+    .chip {
+        border: 1px solid #3a3a6a; background: #16213e; color: #8a8ab0; border-radius: 16px;
+        padding: 6px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .chip.on.short { background: #4a1f28; color: #f0a0a0; border-color: #6b2a36; }
+    .chip.on.partial { background: #4a3a1a; color: #f0c060; border-color: #6b5a2a; }
+    .chip.on.received { background: #1a3a2a; color: #8cd88c; border-color: #2a6a3a; }
+    .chip.on.other { background: #1a2e55; color: #8ab4f8; border-color: #2a4a80; }
+    .totals { margin-top: 14px; font-size: 14px; color: #c0c0e0; }
+    .totals b { color: #fff; font-variant-numeric: tabular-nums; }
+    .bulk {
+        display: none; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; padding: 12px 14px;
+        background: #0f3460; border: 1px solid #5a8dee; border-radius: 10px; font-size: 13px;
+    }
+    .bulk.show { display: flex; }
+    .bulk select, .bulk input[type="text"] { width: auto; padding: 7px 9px; font-size: 13px; }
+    table.lines { min-width: 1180px; }
+    table.lines th, table.lines td { padding-left: 8px; padding-right: 8px; }
+    table.lines td { vertical-align: top; }
+    table.lines td small { display: block; color: #8a8ab0; font-size: 11px; margin-top: 2px; }
+    table.lines td.why { white-space: normal; line-height: 1.45; min-width: 200px; max-width: 280px; font-size: 12px; }
+    table.lines select, table.lines input[type="text"] { padding: 6px 8px; font-size: 13px; }
+    table.lines select { width: 96px; }
+    table.lines input.claim { width: 112px; }
+    table.lines input.note { width: 150px; }
+    table.lines tr.saved td { background: #1a3a2a; transition: background 0.2s; }
+    table.lines tr.failed td { background: #3e1c24; }
+    .late { color: #f0a0a0; } .soon { color: #f0c060; }
+    .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; font-size: 13px; color: #b0b0cc; flex-wrap: wrap; }
+    .pager button[disabled] { opacity: 0.4; cursor: default; }
+    .empty { padding: 26px; text-align: center; color: #b0b0cc; font-size: 14px; }
+    #save-error { display: none; margin-top: 14px; }
+</style>
+{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Shortage Check</h1>
+    <p>What Mopar billed against what {{ store.name }} received</p>
+</div>
+{% include '_nav.html' %}
+{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="top">
+        <div>
+            {% if invoice %}
+            <h2>Invoice {{ invoice.number }}
+                {% if not invoice.complete %}<span class="pill amber">Not complete</span>{% endif %}
+                {% if invoice.done %}<span class="pill green">Done</span>{% endif %}
+            </h2>
+            <p class="note" style="margin-bottom:0;">
+                {{ invoice.title }}{% if invoice.invoice_date %}, {{ invoice.invoice_date.strftime('%B %d, %Y') }}{% endif %}.
+                {% if invoice.complete %}The lines and charges add up to the invoice total, {{ invoice.lines_total|money }}.
+                {% elif invoice.net_total is none %}This copy has no SUMMARY page, so lines are missing. Load the complete PDF and it takes this copy's place; statuses and notes are kept.
+                {% else %}The lines and charges read add up to {{ invoice.lines_total|money }}. The invoice says {{ invoice.net_total|money }}.{% endif %}
+            </p>
+            {% if invoice.charges %}
+            <p class="note" style="margin:8px 0 0;">Charges on this invoice that are not parts:
+                {% for code, c in invoice.charges|dictsort %}{{ c[0]|capitalize }} {{ c[1]|money }}{{ '; ' if not loop.last else '.' }}{% endfor %}
+            </p>
+            {% endif %}
+            {% else %}
+            <h2>Open shortages, all invoices</h2>
+            <p class="note" style="margin-bottom:0;">Every short line that is not paid, denied or found, from the invoices not marked done.</p>
+            {% endif %}
+        </div>
+        <div class="acts">
+            <a class="btn-small" href="{{ url_for('shortage.home') }}">Back to invoices</a>
+            <a class="btn-small" href="{{ export_url }}">Download Excel</a>
+            {% if invoice %}
+            <form method="post" action="{{ url_for('shortage.invoice_done', invoice_id=invoice.id) }}">
+                {{ form_guard() }}
+                <input type="hidden" name="done" value="{{ '0' if invoice.done else '1' }}">
+                <button class="btn-small" type="submit">{{ 'Reopen' if invoice.done else 'Mark done' }}</button>
+            </form>
+            {% if is_admin %}
+            <form method="post" action="{{ url_for('shortage.invoice_delete', invoice_id=invoice.id) }}" data-confirm="Click again to remove this invoice">
+                {{ form_guard() }}
+                <button class="btn-small danger" type="submit">Remove invoice</button>
+            </form>
+            {% endif %}
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="filters" id="filters">
+        <button type="button" class="chip short" data-res="short"></button>
+        <button type="button" class="chip partial" data-res="partial"></button>
+        <button type="button" class="chip received" data-res="received"></button>
+        <button type="button" class="chip other" data-res="other"></button>
+        <select id="f-status" aria-label="Status">
+            <option value="any">Any status</option>
+            <option value="open">No claim yet</option>
+            <option value="review">Review</option>
+            <option value="filed">Filed</option>
+            <option value="paid">Paid</option>
+            <option value="denied">Denied</option>
+            <option value="found">Found</option>
+        </select>
+        <select id="f-due" aria-label="Deadline">
+            <option value="any">Any deadline</option>
+            <option value="soon">Deadline in 3 days or less</option>
+            <option value="late">Past the deadline</option>
+        </select>
+        <select id="f-new" aria-label="Recent orders">
+            <option value="0">Show recent orders</option>
+            <option value="7">Hide orders from the last 7 days</option>
+            <option value="14">Hide orders from the last 14 days</option>
+        </select>
+        <select id="f-sort" aria-label="Sort">
+            <option value="deadline">Sort: deadline first</option>
+            <option value="value">Sort: largest dollars first</option>
+            <option value="invoice">Sort: invoice order</option>
+            <option value="part">Sort: part number</option>
+            <option value="order">Sort: order number</option>
+        </select>
+        <input type="text" id="f-q" placeholder="Search part, order, shipper, claim, note" aria-label="Search">
+    </div>
+    <div class="totals" id="totals" role="status"></div>
+    <div class="bulk" id="bulk">
+        <span id="bulk-n"></span>
+        <select id="bulk-status" aria-label="Status for the picked lines">
+            <option value="keep">Leave status</option>
+            <option value="">No status</option>
+            <option value="review">Review</option>
+            <option value="filed">Filed</option>
+            <option value="paid">Paid</option>
+            <option value="denied">Denied</option>
+            <option value="found">Found</option>
+        </select>
+        <input type="text" id="bulk-claim" placeholder="Claim number for all" maxlength="40" aria-label="Claim number for the picked lines">
+        <button type="button" class="btn-small" id="bulk-apply">Apply to picked lines</button>
+        <button type="button" class="btn-small" id="bulk-clear">Clear picks</button>
+    </div>
+    <div class="error-msg" id="save-error" role="alert"></div>
+</div>
+
+<div class="table-wrap">
+    <table class="lines">
+        <thead><tr>
+            <th><input type="checkbox" id="pick-all" aria-label="Pick every line shown"></th>
+            <th>Deadline</th><th>Result</th><th>Part</th><th>Order</th><th>Shipper</th>
+            <th class="num">Billed / received</th><th class="num">Short value</th><th>Why</th>
+            <th>Status</th><th>Claim number</th><th>Note</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none;"></div>
+</div>
+<div class="pager">
+    <span id="page-info"></span>
+    <span>
+        <button type="button" class="btn-small" id="prev">Previous</button>
+        <button type="button" class="btn-small" id="next">Next</button>
+        <select id="page-size" aria-label="Lines per page" style="width:auto; padding:6px 8px; font-size:12px;">
+            <option value="50">50 a page</option><option value="200">200 a page</option>
+        </select>
+    </span>
+</div>
+
+<script>
+(function () {
+    var ROWS = {{ rows|tojson }};
+    var TODAY = new Date({{ today.isoformat()|tojson }} + 'T00:00:00');
+    var ONE_INVOICE = {{ 'true' if invoice else 'false' }};
+    var STATUS = [['', '—'], ['review', 'Review'], ['filed', 'Filed'], ['paid', 'Paid'], ['denied', 'Denied'], ['found', 'Found']];
+    var RESULT = { short: ['Short', 'red'], partial: ['Partial', 'amber'], received: ['Received', 'green'],
+                   core: ['Core charge', 'blue'], ignored: ['Ignored part', 'blue'], none: ['No charge', 'blue'] };
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var f = { res: { short: true, partial: true, received: false, other: false }, status: 'any', due: 'any', recent: 0, sort: 'deadline', q: '' };
+    var page = 0, size = 50, picked = {}, shown = [];
+
+    function $(id) { return document.getElementById(id); }
+    function money(v) { return '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function day(iso) { return iso ? new Date(iso + 'T00:00:00') : null; }
+    function daysLeft(iso) { var d = day(iso); return d ? Math.round((d - TODAY) / 86400000) : null; }
+    function shortDate(iso) { var d = day(iso); return d ? MONTHS[d.getMonth()] + ' ' + d.getDate() : ''; }
+    function bucket(r) { return (r.st === 'short' || r.st === 'partial' || r.st === 'received') ? r.st : 'other'; }
+    function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+
+    // a link from the front page can ask for one view
+    var show = (window.location.search.match(/[?&]show=(\w+)/) || [])[1];
+    if (show === 'open') f.status = 'open';
+    if (show === 'soon') { f.status = 'open'; f.due = 'soon'; }
+    if (show === 'late') { f.status = 'open'; f.due = 'late'; }
+    if (show === 'filed') f.status = 'filed';
+    if (ONE_INVOICE && !ROWS.some(function (r) { return r.st === 'short' || r.st === 'partial'; })) { f.res.received = true; f.res.other = true; }
+    $('f-status').value = f.status; $('f-due').value = f.due;
+
+    function matches(r) {
+        if (!f.res[bucket(r)]) return false;
+        if (f.status === 'open' && !(r.s === '' || r.s === 'review')) return false;
+        if (f.status !== 'any' && f.status !== 'open' && r.s !== f.status) return false;
+        var left = daysLeft(r.d);
+        if (f.due === 'soon' && !(left !== null && left >= 0 && left <= 3)) return false;
+        if (f.due === 'late' && !(left !== null && left < 0)) return false;
+        if (f.recent && r.od) { var age = Math.round((TODAY - day(r.od)) / 86400000); if (age < f.recent) return false; }
+        if (f.q) {
+            var hay = (r.part + ' ' + r.desc + ' ' + r.ord + ' ' + r.shp + ' ' + r.c + ' ' + r.n + ' ' + r.inv + ' ' + r.det).toLowerCase();
+            if (hay.indexOf(f.q) < 0) return false;
+        }
+        return true;
+    }
+    var SORTS = {
+        deadline: function (a, b) { return (a.d || '9').localeCompare(b.d || '9') || b.v - a.v; },
+        value: function (a, b) { return b.v - a.v || b.net - a.net; },
+        invoice: function () { return 0; },
+        part: function (a, b) { return a.part.localeCompare(b.part); },
+        order: function (a, b) { return a.ord.localeCompare(b.ord) || a.shp.localeCompare(b.shp); }
+    };
+
+    function save(ids, change, done) {
+        var body = { ids: ids };
+        for (var k in change) body[k] = change[k];
+        var headers = window.guardHeaders();
+        headers['Content-Type'] = 'application/json';
+        fetch('/api/shortages/lines', { method: 'POST', headers: headers, body: JSON.stringify(body), credentials: 'same-origin' })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }, function () { return { ok: false, body: {} }; }); })
+            .then(function (res) {
+                if (!res.ok) throw new Error(res.body.error || 'That was not saved. Reload the page and try again.');
+                $('save-error').style.display = 'none';
+                done(true);
+            })
+            .catch(function (e) {
+                $('save-error').textContent = e.message || 'That was not saved. Check the connection and try again.';
+                $('save-error').style.display = 'block';
+                done(false);
+            });
+    }
+    function apply(r, change) {
+        if ('status' in change) r.s = change.status;
+        if ('claim_no' in change) {
+            r.c = change.claim_no;
+            // the server files a line that gets a claim number and has no status yet
+            if (r.c && !('status' in change) && (r.s === '' || r.s === 'review')) r.s = 'filed';
+        }
+        if ('note' in change) r.n = change.note;
+    }
+    function saveOne(r, change) {
+        var before = { s: r.s, c: r.c, n: r.n };
+        apply(r, change);
+        save([r.id], change, function (ok) {
+            if (!ok) { r.s = before.s; r.c = before.c; r.n = before.n; }
+            // only this row is drawn again, so text being typed on another row stays
+            var old = document.querySelector('tr[data-id="' + r.id + '"]');
+            if (old) {
+                var fresh = rowEl(r);
+                old.parentNode.replaceChild(fresh, old);
+                fresh.classList.add(ok ? 'saved' : 'failed');
+                setTimeout(function () { fresh.classList.remove('saved'); }, 900);
+            }
+            drawTotals(); drawBulk();
+        });
+    }
+
+    function rowEl(r) {
+        var tr = el('tr'); tr.dataset.id = r.id;
+        var td = el('td'); var cb = el('input'); cb.type = 'checkbox'; cb.checked = !!picked[r.id];
+        cb.setAttribute('aria-label', 'Pick ' + r.part);
+        cb.addEventListener('change', function () { if (cb.checked) picked[r.id] = true; else delete picked[r.id]; drawBulk(); });
+        td.appendChild(cb); tr.appendChild(td);
+
+        td = el('td', 'nowrap'); var left = daysLeft(r.d), counted = r.st === 'short' || r.st === 'partial';
+        td.appendChild(document.createTextNode(shortDate(r.d)));
+        if (left !== null && counted && (r.s === '' || r.s === 'review')) {
+            td.appendChild(el('small', left < 0 ? 'late' : (left <= 3 ? 'soon' : ''),
+                left < 0 ? (-left) + (left === -1 ? ' day late' : ' days late') : (left === 0 ? 'today' : left + (left === 1 ? ' day left' : ' days left'))));
+        }
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); var res = RESULT[r.st] || [r.st, 'blue'];
+        td.appendChild(el('span', 'pill ' + res[1], res[0]));
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); td.appendChild(el('strong', '', r.part));
+        td.appendChild(el('small', '', r.desc + (ONE_INVOICE ? '' : ' · ' + r.inv)));
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); td.appendChild(document.createTextNode(r.ord + (r.ot ? ' (' + r.ot + ')' : '')));
+        if (r.od) td.appendChild(el('small', '', 'ordered ' + shortDate(r.od)));
+        tr.appendChild(td);
+
+        td = el('td', 'nowrap'); td.appendChild(document.createTextNode(r.shp));
+        td.appendChild(el('small', '', 'PDC ' + r.pdc));
+        tr.appendChild(td);
+
+        td = el('td', 'num'); td.appendChild(document.createTextNode(r.q + ' / ' + r.r));
+        tr.appendChild(td);
+
+        td = el('td', 'num'); td.appendChild(document.createTextNode(counted ? money(r.v) : ''));
+        td.appendChild(el('small', '', money(r.u) + ' each'));
+        tr.appendChild(td);
+
+        td = el('td', 'why');
+        var why = [r.how, r.hint].filter(Boolean).join(' ');
+        if (!why && r.st === 'short') why = 'No receipt found for this part on this order or shipper.';
+        if (r.st === 'core') why = 'Core charge. It is billed with the part and is not a part to receive.';
+        if (r.st === 'ignored') why = 'On the ignored parts list.';
+        if (r.st === 'none') why = 'Billed at $0.00. There is nothing to claim.';
+        td.appendChild(document.createTextNode(why));
+        if (r.det) td.appendChild(el('small', '', r.det));
+        tr.appendChild(td);
+
+        td = el('td'); var sel = el('select'); sel.setAttribute('aria-label', 'Status of ' + r.part);
+        STATUS.forEach(function (s) { var o = el('option', '', s[1]); o.value = s[0]; sel.appendChild(o); });
+        sel.value = r.s;
+        sel.addEventListener('change', function () { saveOne(r, { status: sel.value }); });
+        td.appendChild(sel); tr.appendChild(td);
+
+        [['c', 'claim', 'claim_no', 40, 'Claim number'], ['n', 'note', 'note', 500, 'Note']].forEach(function (spec) {
+            var cell = el('td'), inp = el('input', spec[1]);
+            inp.type = 'text'; inp.maxLength = spec[3]; inp.value = r[spec[0]]; inp.setAttribute('aria-label', spec[4] + ' for ' + r.part);
+            inp.addEventListener('change', function () { var ch = {}; ch[spec[2]] = inp.value.trim(); saveOne(r, ch); });
+            inp.addEventListener('keydown', function (ev) {
+                // Enter saves and moves down the column
+                if (ev.key !== 'Enter') return;
+                ev.preventDefault();
+                var next = tr.nextElementSibling && tr.nextElementSibling.querySelector('input.' + spec[1]);
+                if (next) next.focus(); else inp.blur();
+            });
+            cell.appendChild(inp); tr.appendChild(cell);
+        });
+        return tr;
+    }
+
+    function drawBulk() {
+        var ids = Object.keys(picked), total = 0;
+        ROWS.forEach(function (r) { if (picked[r.id]) total += r.v; });
+        $('bulk').classList.toggle('show', ids.length > 0);
+        $('bulk-n').textContent = ids.length + (ids.length === 1 ? ' line picked · ' : ' lines picked · ') + money(total);
+        $('pick-all').checked = shown.length > 0 && shown.every(function (r) { return picked[r.id]; });
+    }
+
+    function drawTotals() {
+        var billed = 0, shortSum = 0, openSum = 0;
+        shown.forEach(function (r) { billed += r.net; shortSum += r.v; if (r.s === '' || r.s === 'review') openSum += r.v; });
+        var t = $('totals'); t.textContent = '';
+        [['Showing ', shown.length.toLocaleString('en-US') + (shown.length === 1 ? ' line' : ' lines')], [' \u00b7 billed ', money(billed)],
+         [' \u00b7 short ', money(shortSum)], [' \u00b7 short with no claim ', money(openSum)]].forEach(function (p) {
+            t.appendChild(document.createTextNode(p[0])); t.appendChild(el('b', '', p[1]));
+        });
+    }
+
+    function draw() {
+        var counts = { short: 0, partial: 0, received: 0, other: 0 };
+        ROWS.forEach(function (r) { counts[bucket(r)]++; });
+        var names = { short: 'Short', partial: 'Partial', received: 'Received', other: 'Not counted' };
+        Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
+            var k = c.dataset.res; c.textContent = names[k] + ' ' + counts[k].toLocaleString('en-US');
+            c.classList.toggle('on', f.res[k]); c.setAttribute('aria-pressed', f.res[k] ? 'true' : 'false');
+        });
+        shown = ROWS.filter(matches);
+        if (f.sort !== 'invoice') shown.sort(SORTS[f.sort]);
+        var pages = Math.max(1, Math.ceil(shown.length / size));
+        if (page >= pages) page = pages - 1;
+        var body = $('rows'); body.textContent = '';
+        shown.slice(page * size, page * size + size).forEach(function (r) { body.appendChild(rowEl(r)); });
+        drawTotals();
+        $('empty').style.display = shown.length ? 'none' : 'block';
+        $('empty').textContent = ROWS.length ? 'No line matches these filters.' : 'This list is empty.';
+        $('page-info').textContent = shown.length ? (page * size + 1) + ' to ' + Math.min(shown.length, page * size + size) + ' of ' + shown.length.toLocaleString('en-US') : '';
+        $('prev').disabled = page === 0; $('next').disabled = page >= pages - 1;
+        drawBulk();
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
+        c.addEventListener('click', function () { f.res[c.dataset.res] = !f.res[c.dataset.res]; page = 0; draw(); });
+    });
+    $('f-status').addEventListener('change', function () { f.status = this.value; page = 0; draw(); });
+    $('f-due').addEventListener('change', function () { f.due = this.value; page = 0; draw(); });
+    $('f-new').addEventListener('change', function () { f.recent = Number(this.value); page = 0; draw(); });
+    $('f-sort').addEventListener('change', function () { f.sort = this.value; page = 0; draw(); });
+    $('f-q').addEventListener('input', function () { f.q = this.value.trim().toLowerCase(); page = 0; draw(); });
+    $('prev').addEventListener('click', function () { if (page > 0) { page--; draw(); } });
+    $('next').addEventListener('click', function () { page++; draw(); });
+    $('page-size').addEventListener('change', function () { size = Number(this.value); page = 0; draw(); });
+    $('pick-all').addEventListener('change', function () {
+        var on = this.checked; shown.forEach(function (r) { if (on) picked[r.id] = true; else delete picked[r.id]; }); draw();
+    });
+    $('bulk-clear').addEventListener('click', function () { picked = {}; draw(); });
+    $('bulk-apply').addEventListener('click', function () {
+        var ids = Object.keys(picked).map(Number), change = {};
+        if ($('bulk-status').value !== 'keep') change.status = $('bulk-status').value;
+        if ($('bulk-claim').value.trim()) change.claim_no = $('bulk-claim').value.trim();
+        if (!ids.length || !Object.keys(change).length) return;
+        var btn = this; btn.disabled = true;
+        save(ids, change, function (ok) {
+            btn.disabled = false;
+            if (ok) {
+                ROWS.forEach(function (r) { if (picked[r.id]) apply(r, change); });
+                picked = {}; $('bulk-claim').value = ''; $('bulk-status').value = 'keep';
+            }
+            draw();
+        });
+    });
+    draw();
+})();
+</script>
+{% endblock %}

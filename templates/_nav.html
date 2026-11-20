@@ -59,6 +59,7 @@
     {% endif %}
     {% endif %}
     {% if accounts_on and me %}
+    {% if store %}<a class="tab{{ ' active' if active == 'shortage' }}" href="/shortages">Shortage Check</a>{% endif %}
     {% if store %}<a class="tab{{ ' active' if active == 'history' }}" href="/history">History</a>{% endif %}
     {% if store and is_admin %}<a class="tab{{ ' active' if active == 'users' }}" href="/users">Users</a>{% endif %}
     {% if me.is_owner %}<a class="tab{{ ' active' if active == 'owner' }}" href="/owner">Stores</a>{% endif %}

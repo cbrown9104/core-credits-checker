@@ -1,0 +1,230 @@
+{% extends 'account/base.html' %}
+{% block title %}Shortage Check — {{ store.name }}{% endblock %}
+{% block head %}
+<style>
+    .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 22px; }
+    @media (max-width: 860px) { .tiles { grid-template-columns: 1fr 1fr; } }
+    .tile { display: block; background: #16213e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 18px; text-decoration: none; }
+    .tile:hover { border-color: #5a8dee; }
+    .tile .n { font-size: 28px; font-weight: 700; color: #fff; }
+    .tile .v { font-size: 15px; color: #c0c0e0; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .tile .l { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #8a8ab0; margin-top: 8px; }
+    .tile.red .n { color: #f0a0a0; } .tile.amber .n { color: #f0c060; } .tile.blue .n { color: #8ab4f8; }
+    .drop { display: block; border: 2px dashed #3a3a6a; border-radius: 12px; padding: 30px 20px; text-align: center; cursor: pointer; }
+    .drop.over { border-color: #5a8dee; background: #0f3460; }
+    .drop strong { display: block; color: #fff; font-size: 17px; margin-bottom: 6px; }
+    .drop span { color: #b0b0cc; font-size: 13px; line-height: 1.5; }
+    .drop input { display: none; }
+    #sending { display: none; margin-top: 14px; font-size: 14px; color: #8ab4f8; }
+    td.msg { white-space: normal; line-height: 1.5; min-width: 300px; }
+    .row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+    .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; max-width: 560px; }
+    .cal .dow { font-size: 11px; color: #8a8ab0; text-transform: uppercase; text-align: center; }
+    .cal .day { border-radius: 8px; padding: 6px 4px; text-align: center; background: #1e2e50; min-height: 46px; }
+    .cal .day b { display: block; font-size: 12px; color: #c0c0e0; }
+    .cal .day i { font-style: normal; font-size: 11px; color: #8cd88c; }
+    .cal .day.has { background: #1a3a2a; }
+    .cal .day.none { background: #4a1f28; } .cal .day.none i { color: #f0a0a0; }
+    .cal .day.off { background: #16213e; border: 1px solid #1e2e50; } .cal .day.off b { color: #5a5a80; }
+    details.settings summary { cursor: pointer; color: #8ab4f8; font-weight: 600; font-size: 15px; }
+    details.settings textarea {
+        width: 100%; min-height: 70px; padding: 10px 12px; background: #0f3460; color: #e0e0e0;
+        border: 1px solid #3a3a6a; border-radius: 6px; font-size: 14px; font-family: inherit;
+    }
+    .late { color: #f0a0a0; } .soon { color: #f0c060; }
+</style>
+{% endblock %}
+{% block header %}
+<div class="header">
+    <h1>Shortage Check</h1>
+    <p>What Mopar billed against what {{ store.name }} received</p>
+</div>
+{% include '_nav.html' %}
+{% endblock %}
+{% block content %}
+<div class="tiles">
+    <a class="tile red" href="{{ url_for('shortage.open_page') }}?show=open">
+        <div class="n">{{ '{:,}'.format(facts.open_n) }}</div><div class="v">{{ facts.open_v|money }}</div>
+        <div class="l">Short, no claim yet</div>
+    </a>
+    <a class="tile amber" href="{{ url_for('shortage.open_page') }}?show=soon">
+        <div class="n">{{ '{:,}'.format(facts.soon_n) }}</div><div class="v">{{ facts.soon_v|money }}</div>
+        <div class="l">Deadline in 3 days or less</div>
+    </a>
+    <a class="tile red" href="{{ url_for('shortage.open_page') }}?show=late">
+        <div class="n">{{ '{:,}'.format(facts.late_n) }}</div><div class="v">{{ facts.late_v|money }}</div>
+        <div class="l">Past the deadline</div>
+    </a>
+    <a class="tile blue" href="{{ url_for('shortage.open_page') }}?show=filed">
+        <div class="n">{{ '{:,}'.format(facts.filed_n) }}</div><div class="v">{{ facts.filed_v|money }}</div>
+        <div class="l">Claim filed, waiting on credit</div>
+    </a>
+</div>
+
+<div class="card">
+    <h2>Load files</h2>
+    <label class="drop" id="drop">
+        <strong>Drop the invoice PDFs and the DMS file here</strong>
+        <span>Mopar parts invoices (W and WA) as PDFs, and the Reynolds parts transaction file (CSV or Excel).<br>
+        Any mix, any order. Every file gets an answer below. Loading a file twice changes nothing.</span>
+        <input type="file" id="files" multiple accept=".pdf,.csv,.xlsx,.xlsm">
+    </label>
+    <div id="sending" role="status"></div>
+    <div class="error-msg" id="send-error" style="display:none; margin:14px 0 0;" role="alert"></div>
+</div>
+
+{% if uploads %}
+<div class="card" id="uploads">
+    <h2>What happened to each file</h2>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>When</th><th>File</th><th>Result</th><th>What happened</th><th>Who</th></tr></thead>
+            <tbody>
+            {% for u in uploads %}
+            <tr>
+                <td class="nowrap">{{ u.created_at|central }}</td>
+                <td>{{ u.filename }}</td>
+                <td class="nowrap">
+                    {% if u.result == 'loaded' %}<span class="pill green">Loaded</span>
+                    {% elif u.result == 'already' %}<span class="pill blue">Already loaded</span>
+                    {% elif u.result == 'cut_off' %}<span class="pill amber">Loaded, not complete</span>
+                    {% else %}<span class="pill red">Not loaded</span>{% endif %}
+                </td>
+                <td class="msg">{{ u.message }}</td>
+                <td>{{ u.user_email }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Invoices</h2>
+    {% if invoices %}
+    <div class="row-actions">
+        <a class="btn-primary" href="{{ url_for('shortage.open_page') }}">All open shortages</a>
+        <a class="btn-small" style="padding:13px 16px;" href="{{ url_for('shortage.open_export') }}">Download open shortages (Excel)</a>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr>
+                <th>Invoice date</th><th>Invoice</th><th class="num">Lines</th><th class="num">Received</th>
+                <th class="num">Short, no claim</th><th class="num">Filed</th><th>Next deadline</th><th></th>
+            </tr></thead>
+            <tbody>
+            {% for i in invoices %}
+            <tr>
+                <td class="nowrap">{{ i.invoice_date.strftime('%b %d, %Y') if i.invoice_date else '' }}</td>
+                <td>
+                    <a class="plain" href="{{ url_for('shortage.invoice_page', invoice_id=i.id) }}"><strong>{{ i.number }}</strong></a>
+                    {% if not i.complete %}<span class="pill amber" title="No SUMMARY page was read, or the lines do not add up to the invoice total">Not complete</span>{% endif %}
+                    {% if i.done %}<span class="pill green">Done</span>{% endif %}
+                </td>
+                <td class="num">{{ '{:,}'.format(i.n_lines) }}</td>
+                <td class="num">{{ '{:,}'.format(i.n_received) }}</td>
+                <td class="num">{% if i.n_open %}<strong class="late">{{ '{:,}'.format(i.n_open) }}</strong> &middot; {{ i.open_v|money }}{% else %}0{% endif %}</td>
+                <td class="num">{{ '{:,}'.format(i.n_filed) }}</td>
+                <td class="nowrap">
+                    {% if i.next_deadline %}
+                    {% set left = (i.next_deadline - today).days %}
+                    {{ i.next_deadline.strftime('%b %d') }}
+                    {% if left < 0 %}<span class="late">({{ -left }} day{{ '' if left == -1 else 's' }} late)</span>
+                    {% elif left == 0 %}<span class="soon">(today)</span>
+                    {% else %}<span class="{{ 'soon' if left <= 3 else '' }}">({{ left }} day{{ '' if left == 1 else 's' }} left)</span>{% endif %}
+                    {% endif %}
+                </td>
+                <td class="nowrap"><a class="btn-small" href="{{ url_for('shortage.invoice_page', invoice_id=i.id) }}">Open</a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="note" style="margin-bottom:0;">No invoice is loaded yet. Save this week's W and WA invoices from DealerCONNECT (My Dealership, then Invoices &amp; Credit Memos, then Parts) as PDFs, every page through the SUMMARY page. Drop them above with the Reynolds parts transaction file.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>DMS data on file</h2>
+    <p class="note">{% if coverage %}Receipts are on file from {{ coverage.first.strftime('%b %d, %Y') }} to {{ coverage.last.strftime('%b %d, %Y') }}. {% endif %}A red day has no rows on file. A part received on a red day shows as short until the DMS file for that day is loaded. The number on a green day is its receipts.</p>
+    <div class="cal">
+        {% for d in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') %}<div class="dow">{{ d }}</div>{% endfor %}
+        {% for week in weeks %}{% for c in week %}
+        {# red only where data is expected: a weekday after the first day on file #}
+        {% set expected = coverage and c.day >= coverage.first and not c.future and not c.weekend %}
+        <div class="day {{ 'has' if c.rows else ('none' if expected else 'off') }}"
+             title="{{ c.day.strftime('%b %d') }}: {{ c.rows }} rows, {{ c.receipts }} receipts">
+            <b>{{ c.day.day }}</b>{% if c.rows or expected %}<i>{{ c.receipts if c.rows else 'none' }}</i>{% endif %}
+        </div>
+        {% endfor %}{% endfor %}
+    </div>
+</div>
+
+{% if is_admin %}
+<div class="card">
+    <details class="settings" id="settings">
+        <summary>Settings: claim deadlines and ignored parts</summary>
+        <p class="note" style="margin-top:12px;">A line's deadline is the invoice date plus these days. Check the numbers against Mopar's current claim rules; this page does not know them.</p>
+        <form method="post" action="{{ url_for('shortage.settings_save') }}">
+            {{ form_guard() }}
+            <div class="grid2">
+                <div>
+                    <label class="title" for="default_days">Days to file a claim</label>
+                    <input type="number" id="default_days" name="default_days" min="1" max="120" value="{{ settings.default_days }}" required>
+                </div>
+                <div>
+                    <label class="title" for="pdc_days">Different days for one PDC (one per line, like 03181 = 7)</label>
+                    <textarea id="pdc_days" name="pdc_days" spellcheck="false">{{ pdc_text }}</textarea>
+                </div>
+            </div>
+            <label class="title" for="ignored_parts" style="margin-top:14px;">Parts never counted as short (commas or spaces between them)</label>
+            <textarea id="ignored_parts" name="ignored_parts" spellcheck="false">{{ ignored_text }}</textarea>
+            <button class="btn-primary" type="submit" style="margin-top:14px;">Save settings</button>
+        </form>
+    </details>
+</div>
+{% endif %}
+
+<script>
+(function () {
+    var drop = document.getElementById('drop'), input = document.getElementById('files');
+    var sending = document.getElementById('sending'), err = document.getElementById('send-error');
+    var busy = false;
+    function send(list) {
+        if (busy || !list || !list.length) return;
+        busy = true;
+        err.style.display = 'none';
+        sending.style.display = 'block';
+        sending.textContent = 'Reading ' + list.length + (list.length === 1 ? ' file' : ' files') + '. Keep this page open.';
+        var fd = new FormData();
+        for (var i = 0; i < list.length; i++) fd.append('files', list[i]);
+        fetch('/api/shortages/upload', { method: 'POST', headers: window.guardHeaders(), body: fd, credentials: 'same-origin' })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }, function () { return { ok: false, body: {} }; }); })
+            .then(function (res) {
+                if (!res.ok) { throw new Error(res.body.error || 'The files could not be read. Try again.'); }
+                // the answers are in "What happened to each file" after the reload
+                window.location.href = '/shortages#uploads';
+                window.location.reload();
+            })
+            .catch(function (e) {
+                busy = false;
+                input.value = '';
+                sending.style.display = 'none';
+                err.textContent = e.message || 'The files could not be sent. Check the connection and try again.';
+                err.style.display = 'block';
+            });
+    }
+    input.addEventListener('change', function () { send(input.files); });
+    ['dragenter', 'dragover'].forEach(function (n) {
+        drop.addEventListener(n, function (ev) { ev.preventDefault(); drop.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (n) {
+        drop.addEventListener(n, function (ev) { ev.preventDefault(); drop.classList.remove('over'); });
+    });
+    drop.addEventListener('drop', function (ev) { send(ev.dataTransfer && ev.dataTransfer.files); });
+    if (window.location.hash === '#settings') { var s = document.getElementById('settings'); if (s) s.open = true; }
+})();
+</script>
+{% endblock %}

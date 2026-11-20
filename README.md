@@ -1,12 +1,13 @@
 # core-credits-checker
 Core return auditor for CDJR parts managers.
 
-Two pages:
+Three tools:
 
 | Page | What it does |
 |---|---|
 | **Quick Check** (`/`) | One GCRS shipper PDF + credit memo PDF(s) → the shipped cores with no credit (unclaimed), oldest shipper date first. |
 | **Full Reconciliation** (`/reconcile`) | The weekly core-returns cycle: updates the Core Returns master, builds the Mopar credit request with marked signed shipper pages, the re-scan list, and the master-vs-DealerCONNECT comparison. |
+| **Shortage Check** (`/shortages`, store accounts only) | Mopar parts invoices against the receipts in the DMS: what was billed and not received, with a claim deadline, status, claim number and note per line. |
 
 ## Full Reconciliation — weekly run
 
@@ -41,6 +42,17 @@ You get back:
 - The master is written with its cell formatting: Arial 10, thin gray grid, rows with no credit memo yellow, credited rows banded white / gray, A–B left, C–E centered, F right as dollars, G–H centered. *Unpaid Cores* is plain (grid only).
 - "Write today's date in Credit Requested" is off unless checked: the date belongs on the master once the request email has gone to Mopar.
 - With accounts off nothing is stored. Uploads are deleted when the run ends; result files are deleted after 2 hours.
+
+## Shortage Check — billed against received
+
+Needs store accounts (it keeps its work in the database). Package `shortage/`.
+
+- **Files.** One drop box takes the weekly Mopar parts invoices (W and WA, PDFs with a text layer, saved from DealerCONNECT) and the Reynolds parts transaction file from Dynamic Reporting (CSV or Excel). Each file is answered with what became of it: loaded, already loaded, loaded but not complete, or not loaded and why.
+- **Invoice.** A run of shipper blocks (`0999900-5000002 ORD#: EA1030 O/T:E DATE: 2026-10-30`: PDC, shipper, order, order type, order date), each with part lines, charges that are not parts (transportation, deposits, a chargeback) and a SUBTOTAL. The last page has SUMMARY. An invoice is complete when its part lines after discount plus its charges equal NET INVOICE AMOUNT. A copy with no SUMMARY page, or one that does not add up, is marked not complete. A fuller copy replaces a cut-off one and keeps the statuses, claim numbers and notes.
+- **Receipts.** The rows with `Trx_Type` PUR. `Invoice` holds the order number, `Shipping_Number` the shipper. `RECID` is the key, so the same file can be loaded every day. The DMS make code (`CH68524020-AB`) and leading zeros are taken off before part numbers are compared.
+- **Matching.** Same part and same shipper, then same part and same order, then on the same shipper or order the part number the invoice says was superseded, then a part that differs only in its last letter. A receipt is used once. An order number that is only close is never counted (daily order numbers end in the date); it shows as a hint. Core charges (U lines), lines billed at $0.00 and parts on the store's ignored list are not counted. A shortage is valued at what was billed for it after discount.
+- **Deadline.** Invoice date plus the store's days: 14, and 7 for the facing PDC, until an admin changes them. The numbers are the store's to set.
+- **Lines.** Filters with live totals, status (Review, Filed, Paid, Denied, Found), claim number, note, bulk changes, Excel export. A claim number on a line with no status files it.
 
 ## Store accounts (sign-in, saved master, history)
 

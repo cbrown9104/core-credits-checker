@@ -34,7 +34,8 @@ INVITE_MINUTES = 72 * 60
 # calls may send more (up to the app's own limit); everything else is cut
 # off here, whether or not it says how big it is.
 SMALL_BODY = 64 * 1024
-UPLOADS = {'api_reconcile', 'check_cores', 'accounts.master_replace'}
+UPLOADS = {'api_reconcile', 'check_cores', 'accounts.master_replace',
+           'shortage.upload'}
 # A master workbook is a few hundred KB; this is the most one may be.
 MASTER_UPLOAD_MAX = 25 * 1024 * 1024
 
@@ -152,6 +153,11 @@ _FORM_PAGE = {
     'accounts.login': '/login', 'accounts.signup': '/signup',
     'api_reconcile': '/reconcile',
     'check_cores': '/quick',
+    'shortage.upload': '/shortages',
+    'shortage.lines_update': '/shortages',
+    'shortage.settings_save': '/shortages',
+    'shortage.invoice_done': '/shortages',
+    'shortage.invoice_delete': '/shortages',
 }
 
 
@@ -194,7 +200,7 @@ def _other_address():
 # Never a sign-in link, sign-out or an action (a crafted ?next= must not be
 # able to walk a person into someone else's link).
 NEXT_PAGES = ('/reconcile', '/quick', '/history', '/users', '/owner',
-              '/stores')
+              '/stores', '/shortages')
 
 
 def _safe_next(target):
