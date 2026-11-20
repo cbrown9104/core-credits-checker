@@ -101,8 +101,8 @@ def check_master_upload(path):
             'the result workbooks).')
 
 
-def _master_stats(content):
-    """(rows, unpaid_count, unpaid_amount) read from a master workbook."""
+def _master_rows(content):
+    """The rows of a master workbook held in memory, in its order."""
     import tempfile
     from recon import master as M
     fd, path = tempfile.mkstemp(suffix='.xlsx')
@@ -115,6 +115,12 @@ def _master_stats(content):
             os.remove(path)
         except OSError:
             pass
+    return rows
+
+
+def _master_stats(content):
+    """(rows, unpaid_count, unpaid_amount) read from a master workbook."""
+    rows = _master_rows(content)
     unpaid = [r for r in rows if not r.get('memo')]
     amount = 0.0
     for r in unpaid:
@@ -193,6 +199,124 @@ def restore_master(store_id, master_id, actor):
         _audit(conn, store_id, actor, 'master_restored',
                {'from_version': master_id, 'new_version': new_id})
     return new_id
+
+
+# ── the unpaid list (the Unpaid Cores page) ─────────────────────────────
+# What a person can set on a ticket. "closed" shows as Written off.
+TICKET_STATUSES = ('', 'review', 'denied', 'closed')
+NOTE_MAX = 500
+MAX_TICKETS = 2000
+STALE_PAGE = ('The saved master changed after this page was loaded. Reload '
+              'the page, then pick the tickets again.')
+
+
+def master_tickets(store_id):
+    """(the current master without its bytes, its rows), or (None, [])
+    when the store has no saved master."""
+    row, content = master_file(store_id)
+    if not row:
+        return None, []
+    return row, _master_rows(content)
+
+
+def _ticket_keys(tickets):
+    from recon.master import ticket_key
+    if not isinstance(tickets, list) or not tickets or \
+            not all(isinstance(t, str) for t in tickets):
+        raise ValueError('Pick the tickets first.')
+    if len(tickets) > MAX_TICKETS:
+        raise ValueError(f'Pick {MAX_TICKETS:,} tickets or fewer at a time.')
+    keys = {ticket_key(t) for t in tickets}
+    if '' in keys or any(len(k) > 40 for k in keys):
+        raise ValueError('Reload the page and try again.')
+    return sorted(keys)
+
+
+def ticket_notes(store_id):
+    """{ticket: {'status': ..., 'note': ...}} for the tickets this store
+    has typed something on."""
+    return {r['ticket']: r for r in db.rows(
+        'SELECT ticket, status, note FROM core_notes WHERE store_id = %s',
+        (store_id,))}
+
+
+def set_ticket_notes(store_id, tickets, changes, actor):
+    """Set the status or the note on tickets of this store. Returns how
+    many tickets were saved. Raises ValueError for a bad value."""
+    keys = _ticket_keys(tickets)
+    status, note = changes.get('status'), changes.get('note')
+    if status is None and note is None:
+        raise ValueError('Nothing to change.')
+    if status is not None and status not in TICKET_STATUSES:
+        raise ValueError('That status is not one of the choices.')
+    if note is not None:
+        note = ' '.join(note.split())[:NOTE_MAX]
+    with db.connect() as conn:
+        conn.execute(
+            'INSERT INTO core_notes (store_id, ticket, status, note, '
+            'changed_email, changed_at) SELECT %s, t, %s, %s, %s, now() '
+            'FROM unnest(%s::text[]) AS t '
+            'ON CONFLICT (store_id, ticket) DO UPDATE SET '
+            'status = COALESCE(%s::text, core_notes.status), '
+            'note = COALESCE(%s::text, core_notes.note), '
+            'changed_email = EXCLUDED.changed_email, changed_at = now()',
+            (store_id, status or '', note or '',
+             (actor or {}).get('email', ''), keys, status, note))
+        # a ticket with nothing typed on it needs no row
+        conn.execute(
+            "DELETE FROM core_notes WHERE store_id = %s AND ticket = "
+            "ANY(%s) AND status = '' AND note = ''", (store_id, keys))
+    return len(keys)
+
+
+def mark_requested(store_id, tickets, day, actor, seen_master=None):
+    """Write day ('YYYY-MM-DD', or None to clear it) in Credit Requested
+    for these unpaid tickets of the store's current master, and save the
+    result as a new version (the one before it stays under Master
+    versions). Credited tickets are left alone. seen_master is the
+    version the person was looking at. Returns how many tickets changed;
+    0 means nothing was saved. Raises ValueError with a message for the
+    person."""
+    import tempfile
+    from recon import master as M
+    keys = set(_ticket_keys(tickets))
+    row, content = master_file(store_id)
+    if not row:
+        raise ValueError('No master is saved for this store yet.')
+    if seen_master is not None and row['id'] != seen_master:
+        raise ValueError(STALE_PAGE)
+    rows = _master_rows(content)
+    changed = 0
+    for r in rows:
+        if r.get('memo') or M.ticket_key(r['ticket']) not in keys:
+            continue
+        if (r.get('requested') or None) != day:
+            r['requested'] = day
+            changed += 1
+    if not changed:
+        return 0
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'master.xlsx')
+        M.write_master(rows, path)
+        with open(path, 'rb') as fh:
+            new = fh.read()
+    stats = _master_stats(new)
+    unpaid = sum(1 for r in rows if not r.get('memo'))
+    if (stats[0], stats[1]) != (len(rows), unpaid):
+        # the rewritten workbook has to hold exactly the same tickets
+        raise ValueError('The master could not be rewritten safely, so '
+                         'nothing was changed. Tell us and we will look.')
+    with db.connect() as conn:
+        current = _lock_masters(conn, store_id)
+        if not current or current['id'] != row['id']:
+            raise ValueError(STALE_PAGE)
+        new_id = _insert_master(conn, store_id, row['filename'], new, stats,
+                                'edit', actor, None, True)
+        _audit(conn, store_id, actor,
+               'requested_marked' if day else 'requested_cleared',
+               {'tickets': changed, 'date': day or '',
+                'new_version': new_id, 'replaced_version': row['id']})
+    return changed
 
 
 # ── runs ────────────────────────────────────────────────────────────────

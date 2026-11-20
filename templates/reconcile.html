@@ -265,7 +265,7 @@
                     <div class="act">{{ '{:,}'.format(saved_master.row_count) }} rows{% if saved_master.unpaid_count is not none %} · {{ saved_master.unpaid_count }} unpaid{% endif %}</div>
                     <div class="hint">Last saved {{ saved_master.created_at|central }}{% if saved_master.created_email %} by {{ saved_master.created_email }}{% endif %}.<br>
                         This run starts from it and saves the updated master back.<br>
-                        <a href="/master/download">Download it</a>{% if is_admin %} · <button type="button" class="linkish" onclick="showReplaceMaster()">Use a different workbook…</button>{% endif %}</div>
+                        <a href="/master/download">Download it</a> · <a href="/cores">See the unpaid tickets</a>{% if is_admin %} · <button type="button" class="linkish" onclick="showReplaceMaster()">Use a different workbook…</button>{% endif %}</div>
                 </div>
                 {% endif %}
                 <div id="masterReplace"{% if saved_master %} style="display:none;"{% endif %}>
@@ -342,7 +342,7 @@
         </div>
 
         <div class="checks">
-            <label><input type="checkbox" id="markRequested"> Write today's date in "Credit Requested" for every ticket on the credit request. Check this only once the request email has gone to Mopar (so next week's request doesn't repeat them)</label>
+            <label><input type="checkbox" id="markRequested"> Write today's date in "Credit Requested" for every ticket on the credit request. Check this only once the request email has gone to Mopar (so next week's request doesn't repeat them){% if accounts_on and me %}. Or leave it off and mark the tickets on <a href="/cores">Unpaid Cores</a> after the email is sent{% endif %}</label>
             <label><input type="checkbox" id="applyDc" checked> Let DealerCONNECT correct part #, amount and claim on unpaid tickets, and mark tickets it shows paid</label>
             <label><input type="checkbox" id="includePrev"> Put tickets already requested before back on this credit request</label>
         </div>

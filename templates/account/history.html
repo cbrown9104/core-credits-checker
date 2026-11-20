@@ -24,6 +24,7 @@
     </div>
     <p class="note">Last saved {{ master.created_at|central }}{% if master.created_email %} by {{ master.created_email }}{% endif %}. The next run starts from this master and saves the updated one back here.</p>
     <a class="btn-primary" href="{{ url_for('accounts.master_download') }}">Download {{ master.filename }}</a>
+    <a class="btn-small" href="{{ url_for('accounts.cores') }}" style="margin-left:8px;">See the unpaid tickets</a>
     {% if is_admin %}
     <div class="replace-master">
         <h3>Replace the saved master</h3>
@@ -100,7 +101,7 @@
 {% if versions|length > 1 or (versions and not master) %}
 <div class="card">
     <h2>Master versions</h2>
-    <p class="note">Every run saves a new version. If a run went wrong (wrong file, wrong date), an admin can put an earlier version back. Nothing is deleted when you do.</p>
+    <p class="note">Every run saves a new version, and so does marking tickets as requested on Unpaid Cores. If a run went wrong (wrong file, wrong date), an admin can put an earlier version back. Nothing is deleted when you do.</p>
     <div class="table-wrap">
         <table>
             <thead><tr><th>Saved</th><th>By</th><th>From</th><th class="num">Rows</th><th class="num">Unpaid</th><th></th></tr></thead>
@@ -109,7 +110,7 @@
             <tr>
                 <td class="nowrap">{{ v.created_at|central }}</td>
                 <td>{{ v.created_email }}</td>
-                <td>{{ {'run': 'A run', 'upload': 'Upload', 'restore': 'Put back'}.get(v.source, v.source) }}{% if v.is_current %} <span class="pill green">Current</span>{% endif %}{% if v.held_reason %} <span class="pill amber" title="Not made current because {{ v.held_reason }}">Not made current</span>{% endif %}</td>
+                <td>{{ {'run': 'A run', 'upload': 'Upload', 'restore': 'Put back', 'edit': 'Request dates'}.get(v.source, v.source) }}{% if v.is_current %} <span class="pill green">Current</span>{% endif %}{% if v.held_reason %} <span class="pill amber" title="Not made current because {{ v.held_reason }}">Not made current</span>{% endif %}</td>
                 <td class="num">{{ '{:,}'.format(v.row_count) }}</td>
                 <td class="num">{{ v.unpaid_count if v.unpaid_count is not none else '' }} &middot; {{ v.unpaid_amount|money }}</td>
                 <td class="nowrap">

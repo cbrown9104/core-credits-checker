@@ -53,6 +53,7 @@
     {# signed in: the weekly run is home, so it comes first #}
     <a class="tab{{ ' active' if active == 'reconcile' }}" href="/reconcile">Full Reconciliation</a>
     <a class="tab{{ ' active' if active == 'quick' }}" href="/quick">Quick Check</a>
+    {% if store %}<a class="tab{{ ' active' if active == 'cores' }}" href="/cores">Unpaid Cores</a>{% endif %}
     {% else %}
     <a class="tab{{ ' active' if active == 'quick' }}" href="/">Quick Check</a>
     <a class="tab{{ ' active' if active == 'reconcile' }}" href="/reconcile">Full Reconciliation</a>

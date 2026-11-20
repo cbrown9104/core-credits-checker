@@ -1,12 +1,13 @@
 # core-credits-checker
 Core return auditor for CDJR parts managers.
 
-Three tools:
+Four tools:
 
 | Page | What it does |
 |---|---|
 | **Quick Check** (`/`) | One GCRS shipper PDF + credit memo PDF(s) → the shipped cores with no credit (unclaimed), oldest shipper date first. |
 | **Full Reconciliation** (`/reconcile`) | The weekly core-returns cycle: updates the Core Returns master, builds the Mopar credit request with marked signed shipper pages, the re-scan list, and the master-vs-DealerCONNECT comparison. |
+| **Unpaid Cores** (`/cores`, store accounts only) | The unpaid tickets of the saved master as a list to work: what is ready for a credit request, what was requested and is waiting, what is not due yet, with a status and a note per ticket. |
 | **Shortage Check** (`/shortages`, store accounts only) | Mopar parts invoices against the receipts in the DMS: what was billed and not received, with a claim deadline, status, claim number and note per line. |
 
 ## Full Reconciliation — weekly run
@@ -40,8 +41,18 @@ You get back:
 - A credit for a ticket that is not on the master is added with no Shipment ID. When an uploaded page is short of its TOTAL and holds tickets in the same number range, the run says so, and fills the Shipment ID when the page is short by exactly that one line and amount.
 - The dealer code printed on the documents (`DEALER: 45558000`) wins over the one entered for the run; a difference is reported.
 - The master is written with its cell formatting: Arial 10, thin gray grid, rows with no credit memo yellow, credited rows banded white / gray, A–B left, C–E centered, F right as dollars, G–H centered. *Unpaid Cores* is plain (grid only).
-- "Write today's date in Credit Requested" is off unless checked: the date belongs on the master once the request email has gone to Mopar.
+- "Write today's date in Credit Requested" is off unless checked: the date belongs on the master once the request email has gone to Mopar. With store accounts the date can be written afterwards on Unpaid Cores.
 - With accounts off nothing is stored. Uploads are deleted when the run ends; result files are deleted after 2 hours.
+
+## Unpaid Cores — the saved master as a list to work
+
+Needs store accounts. Nothing is uploaded: the page reads the store's saved master each time it opens.
+
+- **Where a ticket stands.** Credited (it has a credit memo), Requested (it has a Credit Requested date), Ready to request (its shipment date is the store's threshold of days back, 60 until an admin changes it, the same count the run uses), Not due yet (with the day it becomes ready), or No ship date.
+- **Status and note.** Review, Denied or Written off, and a note of up to 500 characters, per ticket. They are kept in the database by store and control ticket (`core_notes`), not in the workbook, so a run or a replaced master does not lose them. A ticket marked Written off leaves the three lists of work to do and stays on the master.
+- **Mark requested.** Writes the date a credit request was sent in Credit Requested on the picked unpaid tickets, or clears it. The master is saved as a new version (History shows it as "Request dates"), written the way a run writes it; the version before it stays under Master versions. It is refused while a run is working for the store, and when the saved master changed after the page was loaded.
+- **Credited tickets** are fetched only when the Credited filter is turned on.
+- **Excel.** `Unpaid_Cores_<date>.xlsx`: the unpaid tickets with age, where each stands, the day it is due for a request, status and note.
 
 ## Shortage Check — billed against received
 
@@ -96,7 +107,8 @@ signed-in service:
   another workbook, and it has to be a real master (a "Core Returns" tab).
   An admin can also replace the saved master without a run, from History
   ("Replace the saved master"): the workbook is saved as it is, as a new
-  version, and the next run starts from it.
+  version, and the next run starts from it. Marking tickets as requested on
+  Unpaid Cores saves a new version too.
 - **A master is held, not made current,** when it comes out with under half
   the saved master's rows, or when the saved master changed while the run was
   working. The run is still saved; an admin makes the held version current
@@ -143,7 +155,8 @@ says it could not be saved.
 
 Not stored: the scans and memos you upload (deleted when a run ends).
 Stored per store: the master (every version), each run's result files and
-numbers, who is on the store. Result files are stored in 2 MB pieces, so a
+numbers, who is on the store, the status and note typed on a core ticket.
+Result files are stored in 2 MB pieces, so a
 large scan-heavy PDF never needs much database memory at once; files over
 40 MB are not kept. The owner's Stores page shows how much is stored.
 

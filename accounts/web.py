@@ -147,6 +147,8 @@ _FORM_PAGE = {
     'accounts.users_remove': '/users', 'accounts.store_settings': '/users',
     'accounts.master_restore': '/history',
     'accounts.master_replace': '/history',
+    'accounts.cores_notes': '/cores',
+    'accounts.cores_requested': '/cores',
     'accounts.owner_create_store': '/owner', 'accounts.owner_open': '/owner',
     'accounts.owner_approve': '/owner', 'accounts.owner_delete': '/owner',
     'accounts.switch_store': '/stores', 'accounts.logout': '/',
@@ -200,7 +202,7 @@ def _other_address():
 # Never a sign-in link, sign-out or an action (a crafted ?next= must not be
 # able to walk a person into someone else's link).
 NEXT_PAGES = ('/reconcile', '/quick', '/history', '/users', '/owner',
-              '/stores', '/shortages')
+              '/stores', '/shortages', '/cores')
 
 
 def _safe_next(target):
@@ -905,6 +907,186 @@ def master_replace():
           if now and now['id'] == new_id else 'The saved master was '
           'replaced.')
     return back
+
+
+# ── the unpaid list ─────────────────────────────────────────────────────
+XLSX = ('application/vnd.openxmlformats-officedocument.spreadsheetml.'
+        'sheet')
+STAGE_NAMES = {'ready': 'Ready to request', 'asked': 'Requested',
+               'wait': 'Not due yet', 'nodate': 'No ship date',
+               'paid': 'Credited'}
+STATUS_NAMES = {'': '', 'review': 'Review', 'denied': 'Denied',
+                'closed': 'Written off'}
+# How far back a request date may be typed.
+REQUEST_DAYS_BACK = 366
+
+
+def _today():
+    """Today's date in Central time, the clock ticket ages are counted
+    on."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo('America/Chicago')).date()
+    except Exception:
+        return (datetime.datetime.utcnow() -
+                datetime.timedelta(hours=5)).date()
+
+
+def _tickets(rows, notes, today, threshold, paid=False):
+    """The unpaid (or the credited) rows of a master, each with where it
+    stands, in the short form the page script and the Excel file read.
+
+    A ticket is ready for a credit request once it is threshold days past
+    its shipment date, the same count the run uses."""
+    from recon.common import shipment_date
+    from recon.master import ticket_key
+    out = []
+    for r in rows:
+        if bool(r.get('memo')) != paid:
+            continue
+        shipped = shipment_date(r.get('shipment'))
+        age = (today - shipped).days if shipped else None
+        if paid:
+            stage = 'paid'
+        elif r.get('requested'):
+            stage = 'asked'
+        elif age is None:
+            stage = 'nodate'
+        else:
+            stage = 'ready' if age >= threshold else 'wait'
+        try:
+            amount = round(float(r.get('amount') or 0), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+        typed = notes.get(ticket_key(r['ticket'])) or {}
+        out.append({
+            't': r['ticket'], 'sh': r.get('shipment') or '',
+            'd': shipped.isoformat() if shipped else '', 'age': age,
+            'due': (shipped + datetime.timedelta(days=threshold)
+                    ).isoformat() if shipped else '',
+            'st': stage, 'p': r.get('part') or '',
+            'c': '' if r.get('claim') is None else r['claim'],
+            'a': amount, 'rq': r.get('requested') or '',
+            'm': r.get('memo') or '',
+            's': typed.get('status', ''), 'n': typed.get('note', '')})
+    return out
+
+
+@bp.route('/cores')
+def cores():
+    """Every unpaid ticket of the store's saved master, with a status
+    and a note on each."""
+    _need_accounts()
+    sid = g.store['id']
+    master, rows = storage.master_tickets(sid)
+    today = _today()
+    return render_template(
+        'account/cores.html', active='cores', master=master, today=today,
+        threshold=g.store['threshold_days'],
+        rows=_tickets(rows, storage.ticket_notes(sid) if master else {},
+                      today, g.store['threshold_days']),
+        credited=sum(1 for r in rows if r.get('memo')))
+
+
+@bp.route('/api/cores/credited')
+def cores_credited():
+    """The credited tickets of the saved master. There are thousands, so
+    the page asks for them only when someone wants to look one up."""
+    _need_accounts()
+    sid = g.store['id']
+    master, rows = storage.master_tickets(sid)
+    return jsonify({
+        'master': master['id'] if master else None,
+        'rows': _tickets(rows, storage.ticket_notes(sid) if master else {},
+                         _today(), g.store['threshold_days'], paid=True)})
+
+
+@bp.route('/cores/export')
+def cores_export():
+    _need_accounts()
+    sid = g.store['id']
+    master, rows = storage.master_tickets(sid)
+    if not master:
+        abort(404)
+    from openpyxl import Workbook
+    from recon.outputs import table_sheet
+    today = _today()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Unpaid Cores'
+    table_sheet(
+        ws, ['Shipment ID', 'Control Ticket', 'Core Part #', 'Claim #',
+             'Credit Amount', 'Age (days)', 'Where it stands',
+             'Due for a request', 'Credit Requested', 'Status', 'Note'],
+        [[t['sh'], t['t'], t['p'], t['c'], t['a'], t['age'],
+          STAGE_NAMES[t['st']], t['due'], t['rq'],
+          STATUS_NAMES.get(t['s'], t['s']), t['n']]
+         for t in _tickets(rows, storage.ticket_notes(sid), today,
+                           g.store['threshold_days'])],
+        widths=[22, 14, 13, 10, 14, 11, 18, 17, 17, 12, 44],
+        money_cols=(4,))
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return send_file(out, mimetype=XLSX, as_attachment=True,
+                     download_name=f'Unpaid_Cores_{today:%Y-%m-%d}.xlsx')
+
+
+@bp.route('/api/cores/notes', methods=['POST'])
+def cores_notes():
+    """Set the status or the note on one ticket or on many."""
+    _need_accounts()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Reload the page and try again.'}), 400
+    changes = {k: data[k] for k in ('status', 'note')
+               if isinstance(data.get(k), str)}
+    try:
+        n = storage.set_ticket_notes(g.store['id'], data.get('tickets'),
+                                     changes, actor())
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'updated': n})
+
+
+@bp.route('/api/cores/requested', methods=['POST'])
+def cores_requested():
+    """Write the date a credit request was sent on the picked unpaid
+    tickets (or clear it). The master with the dates is saved as a new
+    version, as a run would save it."""
+    _need_accounts()
+    sid = g.store['id']
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Reload the page and try again.'}), 400
+    day = data.get('date')
+    if day:
+        try:
+            day = datetime.date.fromisoformat(
+                day if isinstance(day, str) else '')
+        except ValueError:
+            return jsonify({'error': 'Pick the date the request was '
+                                     'sent.'}), 400
+        today = _today()
+        if not today - datetime.timedelta(days=REQUEST_DAYS_BACK) <= day \
+                <= today:
+            return jsonify({'error': 'The request date has to be today or '
+                                     'a day in the last 12 months.'}), 400
+        day = day.isoformat()
+    else:
+        day = None      # no date: clear it
+    if recon_jobs.store_busy(sid):
+        return jsonify({'error': 'A run is working for this store right '
+                                 'now. Wait for it to finish, then try '
+                                 'again.'}), 409
+    seen = data.get('master')
+    try:
+        n = storage.mark_requested(
+            sid, data.get('tickets'), day, actor(),
+            seen_master=seen if type(seen) is int else None)
+    except (ValueError, MasterError) as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify({'changed': n})
 
 
 # ── users (store admin) ─────────────────────────────────────────────────
